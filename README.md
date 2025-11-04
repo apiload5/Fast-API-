@@ -1,17 +1,23 @@
 # High-Scale Multi-Platform Video Downloader Backend 🚀
 
-Yeh backend application Python (FastAPI) aur yt-dlp ka istemal karte hue videos download karta hai. Ismein Referer Header check ki madad se API security shamil hai.
+FastAPI-based media downloader API using yt-dlp.  
+Optimized for deployment on [Railway](https://railway.app) or [Render](https://render.com).
 
-## Features
-- **Multi-Platform Support:** `yt-dlp` ki madad se kai platforms ko support karta hai.
-- **Scalability:** FastAPI aur Docker ke saath design kiya gaya hai (million users ke liye).
-- **Temporary Storage:** File ko user ke computer ya mobile mein direct download karwaya jata hai taake server storage use na ho.
-- **Monetization:** Har download se pehle custom ad page par redirect karna.
-- **Security:** Sirf allowed blogspot domain (`crispy0921.blogspot.com`) se aane wali requests allow hain.
+## 🚀 Endpoints
 
-## Setup (Replit/Local)
+### `/api/getVideo?url=YOUR_VIDEO_URL`
 
-1. **Clone the Repository:**
+Returns JSON with available video/audio formats and direct download links.
+
+## 🛠️ Deployment (Railway)
+1. Push this repo to GitHub.
+2. Connect repo to Railway.
+3. Deploy → Done!
+
+Frontend: Blogger (savemedia.online)
+
+
+. **Clone the Repository:**
    ```bash
    git clone https://github.com/apiload5/Fast-API-
    cd video-downloader-backend
