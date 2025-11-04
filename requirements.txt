@@ -1,11 +1,3 @@
-# FastAPI aur iske dependencies
 fastapi
 uvicorn
-pydantic
-
-# Core download library
 yt-dlp
-
-# Asal mein, million users ke liye yeh bhi chahiye (filhal optional)
-# celery
-# redis
