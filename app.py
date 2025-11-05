@@ -6,25 +6,31 @@ import yt_dlp
 app = FastAPI(
     title="SaveMedia Backend",
     version="1.0",
-    description="Simple FastAPI backend for video info extraction using yt-dlp."
+    description="FastAPI backend for SaveMedia.online — secure and optimized."
 )
 
-# --- Allow CORS (for frontend connection) ---
+# --- Restricted CORS setup ---
+allowed_origins = [
+    "https://savemedia.online",
+    "https://www.savemedia.online",
+    "https://ticnotester.blogspot.com",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # for all domains (you can restrict later)
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# --- Home Route ---
+# --- Root route (for test/health check) ---
 @app.get("/")
 def home():
-    return {"message": "✅ SaveMedia Backend is running successfully!"}
+    return {"message": "✅ SaveMedia Backend running successfully on Railway!"}
 
 
-# --- Video Download Info Route ---
+# --- Download Info Endpoint ---
 @app.get("/download")
 def download_video(url: str = Query(..., description="Video URL to extract info")):
     try:
@@ -56,7 +62,7 @@ def download_video(url: str = Query(..., description="Video URL to extract info"
         return {"error": str(e)}
 
 
-# --- Run App (for local testing only) ---
+# --- Local run (for debugging) ---
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8080)
