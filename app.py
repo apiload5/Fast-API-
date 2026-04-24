@@ -8,8 +8,8 @@ from urllib.parse import urlparse, parse_qs, urlunparse, urlencode
 # --- FastAPI App Setup ---
 app = FastAPI(
     title="SaveMedia Backend",
-    version="1.2",
-    description="Optimized FastAPI backend for SaveMedia.online — Fixed YouTube Auth Error."
+    version="1.3",
+    description="Vercel Optimized — Safe Cookies & Global Deployment"
 )
 
 # --- Restricted CORS setup ---
@@ -36,19 +36,30 @@ def home():
 # --- Optimized Download Info Endpoint ---
 @app.get("/download")
 def download_video(url: str = Query(..., description="Video URL to extract downloadable info")):
+    # 1. Cookies Handle karna (Vercel ke liye)
+    cookie_path = "/tmp/cookies.txt"
+    cookies_data = os.getenv("COOKIES_CONTENT")
+    
+    if cookies_data:
+        try:
+            with open(cookie_path, "w") as f:
+                f.write(cookies_data)
+        except Exception as e:
+            print(f"Cookie write error: {e}")
+
     try:
-        # Check if cookies file exists
-        cookie_path = "cookies.txt"
-        
         ydl_opts = {
             "quiet": True,
             "skip_download": True,
             "forcejson": True,
             "no_warnings": True,
-            # Agar cookies.txt maujood hai to use karega
+            # Agar file exist karti hai to use karein
             "cookiefile": cookie_path if os.path.exists(cookie_path) else None,
-            # Browser jaisa behavior dikhane ke liye
-            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+            "http_headers": {
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-us,en;q=0.5",
+            }
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -56,7 +67,7 @@ def download_video(url: str = Query(..., description="Video URL to extract downl
             video_title = info.get("title", "downloaded_file")
             progressive_formats = []
 
-            # Filter only progressive formats (audio + video combined)
+            # ✅ Filtering progressive formats
             for f in info.get("formats", []):
                 original_url = f.get("url")
 
@@ -82,7 +93,7 @@ def download_video(url: str = Query(..., description="Video URL to extract downl
                         "suggested_filename": f"{video_title}.{f.get('ext')}",
                     })
 
-            # Sort by resolution (highest first)
+            # Sort: Highest resolution first
             progressive_formats.sort(
                 key=lambda x: int(
                     x.get('resolution', '0p').replace('p', '').split('x')[0]
@@ -100,12 +111,12 @@ def download_video(url: str = Query(..., description="Video URL to extract downl
             }
 
     except Exception as e:
-        error_message = str(e).split('\n')[0]
-        # Agar bot ka error hai to user ko batayen
-        if "confirm you’re not a bot" in error_message:
-            error_message = "YouTube block error: Update cookies.txt on server."
+        error_msg = str(e).split('\n')[0]
+        # Friendly message for Bot error
+        if "confirm you’re not a bot" in error_msg.lower():
+            error_msg = "YouTube is asking for verification. Please update cookies in Vercel settings."
             
-        raise HTTPException(status_code=400, detail=f"Error processing URL: {error_message}")
+        raise HTTPException(status_code=400, detail=f"Error: {error_msg}")
 
 
 if __name__ == "__main__":
