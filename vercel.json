@@ -1,6 +1,25 @@
 {
+  "functions": {
+    "main.py": {
+      "maxDuration": 10,
+      "memory": 1024,
+      "runtime": "python3.9"
+    }
+  },
   "rewrites": [
-    { "source": "/download", "destination": "/main.py" },
-    { "source": "/(.*)", "destination": "/main.py" }
+    {
+      "source": "/(.*)",
+      "destination": "/main.py"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "Access-Control-Allow-Origin", "value": "*" },
+        { "key": "Access-Control-Allow-Methods", "value": "GET, POST, OPTIONS" },
+        { "key": "Access-Control-Allow-Headers", "value": "Content-Type, Authorization" }
+      ]
+    }
   ]
 }
