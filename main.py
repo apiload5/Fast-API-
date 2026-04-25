@@ -33,17 +33,19 @@ async def extract_video(url: str = Query(...)):
             "quiet": True,
             "no_warnings": True,
             "cookiefile": cookie_path if os.path.exists(cookie_path) else None,
-            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+            # Windows User-Agent ki jagah ab hum Android User-Agent use karenge
+            "user_agent": "com.google.android.youtube/19.12.35 (Linux; U; Android 14; en_US; Pixel 7 Pro) gzip",
             "format": "best[ext=mp4]/best",
             "nocheckcertificate": True,
             "geo_bypass": True,
             "extractor_args": {
                 "youtube": {
-                    "player_client": ["android_vr", "web_embedded", "ios"],
-                    "player_skip": ["webpage", "configs"]
+                    # ✅ Ye combo 'Error 152' ko bypass karne ke liye best hai
+                    "player_client": ["android", "tvhtml5"],
+                    "player_skip": ["webpage", "configs"],
                 }
             }
-}
+        }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
