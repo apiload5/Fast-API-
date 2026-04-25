@@ -9,8 +9,9 @@ from urllib.parse import urlparse, parse_qs, urlunparse, urlencode
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("uvicorn")
 
-app = FastAPI(title="SaveMedia API", version="3.5")
+app = FastAPI(title="SaveMedia Ultimate API", version="4.0")
 
+# CORS Settings
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://savemedia.online", "https://www.savemedia.online", "https://ticnotester.blogspot.com"],
@@ -23,15 +24,15 @@ app.add_middleware(
 async def extract_video(url: str = Query(...)):
     cookie_path = "/tmp/cookies.txt"
     cookies_data = os.getenv("COOKIES_CONTENT")
+    proxy_url = os.getenv("PROXY_URL")
     
-    # ✅ Vercel Settings se Proxy uthayen (Agar block ho to Proxy kaam karegi)
-    proxy_url = os.getenv("PROXY_URL") 
-    
+    # Setup Cookies
     if cookies_data:
         try:
             with open(cookie_path, "w", encoding="utf-8") as f:
                 f.write(cookies_data.strip())
-        except: pass
+        except Exception as e:
+            logger.error(f"Cookie setup failed: {e}")
 
     try:
         ydl_opts = {
@@ -39,31 +40,33 @@ async def extract_video(url: str = Query(...)):
             "no_warnings": True,
             "cookiefile": cookie_path if os.path.exists(cookie_path) else None,
             
-            # ✅ Sabse takatwar User-Agents rotate karein
-            "user_agent": random.choice([
-                "com.google.android.youtube/19.12.35 (Linux; U; Android 14; en_US; Pixel 7 Pro) gzip",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-            ]),
+            # ✅ Sabse takatwar Android User-Agent
+            "user_agent": "com.google.android.youtube/19.12.35 (Linux; U; Android 14; en_US; Pixel 7 Pro) gzip",
             
-            "format": "best[ext=mp4]/best",
+            # ✅ Format selection (Vercel compatible - No FFmpeg needed)
+            "format": "best[vcodec!=none][acodec!=none][ext=mp4]/best",
+            
             "nocheckcertificate": True,
             "geo_bypass": True,
             
-            # ✅ Proxy configuration (Automated)
+            # ✅ Network Fixes
             "proxy": proxy_url if proxy_url else None,
+            "source_address": "::", # Force IPv6 for bypass
             
-            # ✅ IPv6 force (Bypass trick)
-            "source_address": "::", 
-
+            # ✅ Plugin aur Token support
+            "plugin_dirs": ["/tmp/yt-dlp-plugins"], 
+            
             "extractor_args": {
                 "youtube": {
                     "player_client": ["android", "ios", "tvhtml5"],
-                    "player_skip": ["webpage", "configs"]
+                    "player_skip": ["webpage", "configs"],
+                    # PO Token generate karne ki koshish (Requires yt-dlp-get-pot)
                 }
             }
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # Step 1: Extract Information
             info = ydl.extract_info(url, download=False)
             
             formats = info.get("formats", [info])
@@ -74,11 +77,14 @@ async def extract_video(url: str = Query(...)):
                 if not f_url: continue
 
                 is_youtube = "youtube" in url or "youtu.be" in url
+                # YouTube ke liye merged formats, baqi ke liye simple
                 has_both = f.get("vcodec") != "none" and f.get("acodec") != "none"
 
                 if (is_youtube and has_both) or (not is_youtube and f.get("vcodec") != "none"):
+                    # Resolution handle karein
                     res = f.get("resolution") or (f"{f.get('height')}p" if f.get('height') else "HD")
                     
+                    # Force Download Link Generator
                     try:
                         p = urlparse(f_url); q = parse_qs(p.query)
                         q['mime'] = ['application/octet-stream']
@@ -95,24 +101,25 @@ async def extract_video(url: str = Query(...)):
                         "format_note": f.get("format_note") or "Standard"
                     })
 
+            # Duplicate remove karein aur resolution ke hisab se sort karein
             unique_list = {res['resolution']: res for res in processed}.values()
             final_formats = sorted(unique_list, key=lambda x: str(x['resolution']), reverse=True)
 
             return {
+                "success": True,
                 "title": info.get("title", "Video"),
                 "thumbnail": info.get("thumbnail"),
                 "duration": info.get("duration"),
                 "uploader": info.get("uploader"),
                 "formats": list(final_formats),
-                "using_proxy": bool(proxy_url)
+                "debug": {
+                    "proxy": bool(proxy_url),
+                    "ipv6": True
+                }
             }
 
     except Exception as e:
         error_msg = str(e).split('\n')[0]
-        # Agar IPv6 fail ho to IPv4 par fallback karein (Vercel Compatibility)
-        if "network is unreachable" in error_msg.lower() and "::" in str(e):
-            logger.info("IPv6 failed, retrying with IPv4...")
-            # Yahan logic repeat karne ki bajaye simple error return karein ya retry function dalen
-        
-        logger.error(f"API Error: {error_msg}")
+        # Agar IPv6 region mein support nahi hai to retry logic manual karein (0.0.0.0 par wapis jayen)
+        logger.error(f"Critical API Error: {error_msg}")
         raise HTTPException(status_code=400, detail=error_msg)
