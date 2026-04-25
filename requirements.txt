@@ -1,5 +1,4 @@
 fastapi
 uvicorn
-yt-dlp
-browser-cookie3
+ytdlp-simple
 python-multipart
