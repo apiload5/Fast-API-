@@ -1,5 +1,5 @@
 fastapi
 uvicorn
 yt-dlp
-aiohttp
-cachetools
+yt-dlp-get-pot
+requests
