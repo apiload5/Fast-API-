@@ -34,21 +34,16 @@ async def extract_video(url: str = Query(...)):
             "no_warnings": True,
             "cookiefile": cookie_path if os.path.exists(cookie_path) else None,
             "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-            
-            # ✅ SABSE IMPORTANT FIX: 
-            # Hum sirf wo formats maang rahe hain jo video+audio merged hon (ext=mp4)
-            # Taake Vercel ko merging na karni paray
-            "format": "best[vcodec!=none][acodec!=none][ext=mp4]/best[vcodec!=none][acodec!=none]/best",
-            
+            "format": "best[ext=mp4]/best",
             "nocheckcertificate": True,
             "geo_bypass": True,
             "extractor_args": {
                 "youtube": {
-                    "player_client": ["android", "ios"],
+                    "player_client": ["android_vr", "web_embedded", "ios"],
                     "player_skip": ["webpage", "configs"]
                 }
             }
-        }
+}
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
