@@ -1,4 +1,5 @@
 fastapi
 uvicorn
-ytdlp-simple
-python-multipart
+yt-dlp
+aiohttp
+cachetools
