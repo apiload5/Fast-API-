@@ -6,17 +6,17 @@ import logging
 from typing import Optional
 from urllib.parse import urlparse, parse_qs, urlunparse, urlencode
 
-# --- Logging Setup (Vercel Logs ke liye) ---
+# --- Vercel Logs Setup ---
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("uvicorn")
 
 app = FastAPI(
     title="SaveMedia Backend",
-    version="1.9",
-    description="Universal Downloader - YouTube, FB, TikTok Support"
+    version="2.0",
+    description="Final Optimized Version for SaveMedia.online"
 )
 
-# --- CORS: Sirf savemedia.online aur allowed domains ---
+# --- Restricted CORS ---
 allowed_origins = [
     "https://savemedia.online",
     "https://www.savemedia.online",
@@ -33,11 +33,11 @@ app.add_middleware(
 
 @app.get("/")
 def home():
-    return {"message": "✅ SaveMedia Backend is Fully Operational!"}
+    return {"message": "✅ SaveMedia API is Live and Optimized!"}
 
 @app.get("/download")
 async def download_video(url: str = Query(..., description="Video URL to extract")):
-    # 1. Cookies Handling (From Environment Variable)
+    # 1. Setup Cookies
     cookie_path = "/tmp/cookies.txt"
     cookies_data = os.getenv("COOKIES_CONTENT")
     
@@ -45,13 +45,11 @@ async def download_video(url: str = Query(..., description="Video URL to extract
         try:
             with open(cookie_path, "w", encoding="utf-8") as f:
                 f.write(cookies_data.strip())
-            logger.info("Cookies loaded into /tmp/cookies.txt")
         except Exception as e:
-            logger.error(f"Failed to write cookies: {e}")
+            logger.error(f"Cookie write error: {e}")
 
-    # 2. Main Extraction Logic
     try:
-        logger.info(f"Processing Request: {url}")
+        logger.info(f"Extracting: {url}")
 
         ydl_opts = {
             "quiet": True,
@@ -61,18 +59,12 @@ async def download_video(url: str = Query(..., description="Video URL to extract
             "format": "all", 
             "extract_flat": False,
             "referer": "https://www.youtube.com/",
-            "http_headers": {
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.5",
-                "Sec-Fetch-Mode": "navigate",
-            }
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             video_title = info.get("title", "downloaded_file")
             
-            # Universal formats collection
             raw_formats = info.get("formats", [info])
             processed_formats = []
 
@@ -80,12 +72,20 @@ async def download_video(url: str = Query(..., description="Video URL to extract
                 f_url = f.get("url")
                 if not f_url: continue
 
-                # Platform checking (YouTube, FB, TikTok)
-                is_video = f.get("vcodec") != "none" or "fbcdn" in f_url or "tiktok" in f_url or f.get("ext") == "mp4"
+                # ✅ Aggressive Filtering: YouTube, FB, TikTok
+                # Har wo format uthayenge jis mein video stream ho ya ext mp4/webm ho
+                is_video = (
+                    f.get("vcodec") != "none" or 
+                    f.get("ext") in ["mp4", "webm", "m4v"] or
+                    "fbcdn" in f_url or 
+                    "tiktok" in f_url
+                )
                 
                 if is_video:
+                    # Resolution detection
+                    res = f.get("resolution") or (f"{f.get('height')}p" if f.get('height') else "Standard")
+                    
                     try:
-                        # Force download link modification
                         parsed_url = urlparse(f_url)
                         query_params = parse_qs(parsed_url.query)
                         query_params['mime'] = ['application/octet-stream']
@@ -101,36 +101,29 @@ async def download_video(url: str = Query(..., description="Video URL to extract
                         "filesize": f.get("filesize") or f.get("filesize_approx"),
                         "url": f_url,
                         "force_download_url": force_download_url,
-                        "resolution": f.get("resolution") or f"{f.get('height')}p" or "Standard",
+                        "resolution": res,
                         "has_audio": f.get("acodec") != "none" or "fbcdn" in f_url
                     })
 
-            # Duplicate resolutions saaf karna
+            # Duplicate resolutions saaf kar ke sort karein
             unique_formats = {res['resolution']: res for res in processed_formats}.values()
             sorted_formats = sorted(unique_formats, key=lambda x: str(x['resolution']), reverse=True)
 
             if not sorted_formats:
-                raise Exception("No downloadable formats found.")
+                 raise Exception("YouTube hidden formats. Please update cookies.")
 
             return {
                 "title": video_title,
                 "thumbnail": info.get("thumbnail"),
-                "uploader": info.get("uploader"),
                 "duration": info.get("duration"),
-                "extractor": info.get("extractor"),
+                "uploader": info.get("uploader"),
                 "formats": list(sorted_formats),
             }
 
     except Exception as e:
         error_msg = str(e).split('\n')[0]
-        logger.error(f"Final Extraction Error: {error_msg}")
-        
-        # User friendly error conversion
-        friendly_error = error_msg
-        if "confirm you’re not a bot" in error_msg.lower():
-            friendly_error = "YouTube Blocked this request. Please update Cookies."
-        
-        raise HTTPException(status_code=400, detail=friendly_error)
+        logger.error(f"API Error: {error_msg}")
+        raise HTTPException(status_code=400, detail=error_msg)
 
 if __name__ == "__main__":
     import uvicorn
