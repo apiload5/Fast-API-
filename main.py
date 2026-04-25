@@ -5,36 +5,28 @@ import os
 import logging
 from urllib.parse import urlparse, parse_qs, urlunparse, urlencode
 
-# Logging setup
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("uvicorn")
 
-app = FastAPI(title="SaveMedia API", version="3.0")
+app = FastAPI(title="SaveMedia API", version="3.1")
 
-# ✅ Restricted CORS for security
+# Restricted CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://savemedia.online",
-        "https://www.savemedia.online",
-        "https://ticnotester.blogspot.com"
-    ],
+    allow_origins=["https://savemedia.online", "https://www.savemedia.online", "https://ticnotester.blogspot.com"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 @app.get("/download")
-async def extract_video(url: str = Query(..., description="Video URL")):
+async def extract_video(url: str = Query(...)):
     cookie_path = "/tmp/cookies.txt"
     cookies_data = os.getenv("COOKIES_CONTENT")
     
     if cookies_data:
-        try:
-            with open(cookie_path, "w", encoding="utf-8") as f:
-                f.write(cookies_data.strip())
-        except Exception as e:
-            logger.error(f"Cookie Error: {e}")
+        with open(cookie_path, "w", encoding="utf-8") as f:
+            f.write(cookies_data.strip())
 
     try:
         ydl_opts = {
@@ -43,14 +35,16 @@ async def extract_video(url: str = Query(..., description="Video URL")):
             "cookiefile": cookie_path if os.path.exists(cookie_path) else None,
             "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
             
-            # ✅ Sabse Ahem: 'best' use karein taake FFmpeg ki zaroorat na pare (Vercel Fix)
-            "format": "best[ext=mp4]/best", 
+            # ✅ SABSE IMPORTANT FIX: 
+            # Hum sirf wo formats maang rahe hain jo video+audio merged hon (ext=mp4)
+            # Taake Vercel ko merging na karni paray
+            "format": "best[vcodec!=none][acodec!=none][ext=mp4]/best[vcodec!=none][acodec!=none]/best",
             
             "nocheckcertificate": True,
             "geo_bypass": True,
             "extractor_args": {
                 "youtube": {
-                    "player_client": ["android", "web", "ios"],
+                    "player_client": ["android", "ios"],
                     "player_skip": ["webpage", "configs"]
                 }
             }
@@ -59,22 +53,23 @@ async def extract_video(url: str = Query(..., description="Video URL")):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             
-            # Handle formats safely
-            raw_formats = info.get("formats", [info])
+            # Formats filtering logic
+            formats = info.get("formats", [info])
             processed = []
 
-            for f in raw_formats:
+            for f in formats:
                 f_url = f.get("url")
                 if not f_url: continue
 
-                # ✅ Sirf wo formats jin mein Audio + Video dono pehle se merged hon
-                has_video = f.get("vcodec") != "none"
-                has_audio = f.get("acodec") != "none"
-                
-                if (has_video and has_audio) or "fbcdn" in f_url or "tiktok" in f_url:
+                # YouTube ke liye sirf merged (video+audio) check
+                # TikTok/FB ke liye simple check
+                is_youtube = "youtube" in url or "youtu.be" in url
+                has_both = f.get("vcodec") != "none" and f.get("acodec") != "none"
+
+                if (is_youtube and has_both) or (not is_youtube and f.get("vcodec") != "none"):
                     res = f.get("resolution") or (f"{f.get('height')}p" if f.get('height') else "HD")
                     
-                    # Force download link generator
+                    # Force Download link logic
                     try:
                         p = urlparse(f_url); q = parse_qs(p.query)
                         q['mime'] = ['application/octet-stream']
@@ -91,12 +86,9 @@ async def extract_video(url: str = Query(..., description="Video URL")):
                         "format_note": f.get("format_note") or "Standard"
                     })
 
-            # Sort and unique
+            # Remove duplicates and sort
             unique_list = {res['resolution']: res for res in processed}.values()
             final_formats = sorted(unique_list, key=lambda x: str(x['resolution']), reverse=True)
-
-            if not final_formats:
-                raise Exception("YouTube hidden formats. Please check cookies.")
 
             return {
                 "title": info.get("title", "Video"),
