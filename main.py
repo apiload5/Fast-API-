@@ -25,32 +25,25 @@ async def extract_video(url: str = Query(...)):
     cookies_data = os.getenv("COOKIES_CONTENT")
     
     if cookies_data:
-        with open(cookie_path, "w", encoding="utf-8") as f:
-            f.write(cookies_data.strip())
+        try:
+            with open(cookie_path, "w", encoding="utf-8") as f:
+                f.write(cookies_data.strip())
+        except Exception as e:
+            logger.error(f"Cookie setup failed: {e}")
 
     try:
         ydl_opts = {
-        ydl_opts = {
             "quiet": True,
-            "no_whitelist": True, # Extra security filter
+            "no_whitelist": True,
             "no_warnings": True,
             "cookiefile": cookie_path if os.path.exists(cookie_path) else None,
-            
-            # ✅ Powerful Android User-Agent
             "user_agent": "com.google.android.youtube/19.12.35 (Linux; U; Android 14; en_US; Pixel 7 Pro) gzip",
-            
-            # ✅ Format selection (Vercel compatible)
             "format": "best[ext=mp4]/best",
             "nocheckcertificate": True,
             "geo_bypass": True,
-
-            # --- IPv6 & Network Settings ---
-            # '::' ka matlab hai ke system ko force karna ke wo IPv6 address use kare
-            "source_address": "::", 
-            
+            "source_address": "::", # IPv6 Force
             "extractor_args": {
                 "youtube": {
-                    # ✅ Android + TV combo for bypass
                     "player_client": ["android", "tvhtml5"],
                     "player_skip": ["webpage", "configs"],
                 }
@@ -60,7 +53,6 @@ async def extract_video(url: str = Query(...)):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             
-            # Formats filtering logic
             formats = info.get("formats", [info])
             processed = []
 
@@ -68,15 +60,12 @@ async def extract_video(url: str = Query(...)):
                 f_url = f.get("url")
                 if not f_url: continue
 
-                # YouTube ke liye sirf merged (video+audio) check
-                # TikTok/FB ke liye simple check
                 is_youtube = "youtube" in url or "youtu.be" in url
                 has_both = f.get("vcodec") != "none" and f.get("acodec") != "none"
 
                 if (is_youtube and has_both) or (not is_youtube and f.get("vcodec") != "none"):
                     res = f.get("resolution") or (f"{f.get('height')}p" if f.get('height') else "HD")
                     
-                    # Force Download link logic
                     try:
                         p = urlparse(f_url); q = parse_qs(p.query)
                         q['mime'] = ['application/octet-stream']
@@ -93,7 +82,6 @@ async def extract_video(url: str = Query(...)):
                         "format_note": f.get("format_note") or "Standard"
                     })
 
-            # Remove duplicates and sort
             unique_list = {res['resolution']: res for res in processed}.values()
             final_formats = sorted(unique_list, key=lambda x: str(x['resolution']), reverse=True)
 
