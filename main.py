@@ -128,6 +128,7 @@ async def download_video(url: str = Query(..., description="Video URL")):
             }
 
     except Exception as e:
-        error_detail = str(e).split('\n')[0]
-        logger.error(f"Final Error: {error_detail}")
+        # Ye line asli error dikhayegi ke kiyon fail hua
+        error_detail = str(e) 
+        logger.error(f"Full Error: {error_detail}")
         raise HTTPException(status_code=400, detail=error_detail)
