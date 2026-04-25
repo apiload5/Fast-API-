@@ -2,21 +2,25 @@ from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import yt_dlp
 import os
+import logging
 from typing import Optional
 from urllib.parse import urlparse, parse_qs, urlunparse, urlencode
 
-# --- FastAPI App Setup ---
+# --- Vercel Logs Setup ---
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 app = FastAPI(
     title="SaveMedia Backend",
-    version="1.3",
-    description="Vercel Optimized — Safe Cookies & Global Deployment"
+    version="1.6",
+    description="Final Optimized Backend for SaveMedia.online"
 )
 
-# --- Restricted CORS setup ---
+# --- Restricted CORS (As per your request) ---
 allowed_origins = [
     "https://savemedia.online",
     "https://www.savemedia.online",
-    "https://ticnotester.blogspot.com",
+    "https://ticnotester.blogspot.com"
 ]
 
 app.add_middleware(
@@ -27,16 +31,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Root route ---
 @app.get("/")
 def home():
-    return {"message": "✅ SaveMedia Backend running successfully on Vercel!"}
+    return {"message": "✅ SaveMedia Backend is fully operational!"}
 
-
-# --- Optimized Download Info Endpoint ---
 @app.get("/download")
-def download_video(url: str = Query(..., description="Video URL to extract downloadable info")):
-    # 1. Cookies Handle karna (Vercel ke liye)
+def download_video(url: str = Query(..., description="Video URL to extract")):
+    # 1. Cookies Extraction (Vercel Environment Variable se)
     cookie_path = "/tmp/cookies.txt"
     cookies_data = os.getenv("COOKIES_CONTENT")
     
@@ -44,80 +45,88 @@ def download_video(url: str = Query(..., description="Video URL to extract downl
         try:
             with open(cookie_path, "w") as f:
                 f.write(cookies_data)
+            logger.info("Cookies file created successfully in /tmp")
         except Exception as e:
-            print(f"Cookie write error: {e}")
+            logger.error(f"Error writing cookies: {e}")
 
     try:
+        logger.info(f"Attempting to extract info for: {url}")
+
+        # 2. Universal yt-dlp Configuration
         ydl_opts = {
             "quiet": True,
-            "skip_download": True,
-            "forcejson": True,
             "no_warnings": True,
-            # Agar file exist karti hai to use karein
             "cookiefile": cookie_path if os.path.exists(cookie_path) else None,
-            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-            "http_headers": {
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "en-us,en;q=0.5",
-            }
+            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+            # 'best' use karne se Facebook ke direct links asani se milte hain
+            "format": "best", 
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             video_title = info.get("title", "downloaded_file")
-            progressive_formats = []
+            
+            # YouTube ke liye formats list hoti hai, Facebook ke liye kabhi direct info hoti hai
+            raw_formats = info.get("formats", [info])
+            processed_formats = []
 
-            # ✅ Filtering progressive formats
-            for f in info.get("formats", []):
-                original_url = f.get("url")
+            for f in raw_formats:
+                f_url = f.get("url")
+                if not f_url:
+                    continue
 
-                if original_url and f.get("acodec") != "none" and f.get("vcodec") != "none":
+                # Video filter (vcodec 'none' na ho ya FB ki CDN link ho)
+                is_video = f.get("vcodec") != "none" or "fbcdn" in f_url or "facebook.com" in f_url
+                
+                if is_video:
+                    # Force download logic (Mime type change)
                     try:
-                        parsed_url = urlparse(original_url)
+                        parsed_url = urlparse(f_url)
                         query_params = parse_qs(parsed_url.query)
                         query_params['mime'] = ['application/octet-stream']
-
                         new_query = urlencode(query_params, doseq=True)
                         force_download_url = urlunparse(parsed_url._replace(query=new_query))
-                    except Exception:
-                        force_download_url = original_url
+                    except:
+                        force_download_url = f_url
 
-                    progressive_formats.append({
-                        "format_id": f.get("format_id"),
-                        "ext": f.get("ext"),
-                        "format_note": f.get("format_note"),
-                        "filesize": f.get("filesize"),
-                        "url": original_url,
+                    processed_formats.append({
+                        "format_id": f.get("format_id", "best"),
+                        "ext": f.get("ext", "mp4"),
+                        "format_note": f.get("format_note") or f.get("quality_label") or "HD",
+                        "filesize": f.get("filesize") or f.get("filesize_approx"),
+                        "url": f_url,
                         "force_download_url": force_download_url,
-                        "resolution": f.get("resolution") or f"{f.get('height')}p",
-                        "suggested_filename": f"{video_title}.{f.get('ext')}",
+                        "resolution": f.get("resolution") or f"{f.get('height')}p" or "Standard",
+                        "has_audio": f.get("acodec") != "none" or "fbcdn" in f_url
                     })
 
-            # Sort: Highest resolution first
-            progressive_formats.sort(
-                key=lambda x: int(
-                    x.get('resolution', '0p').replace('p', '').split('x')[0]
-                    if 'p' in x.get('resolution', '0p') else '0'
-                ),
-                reverse=True
-            )
+            # Duplicate resolutions saaf karna aur sort karna
+            unique_formats = {res['resolution']: res for res in processed_formats}.values()
+            sorted_formats = sorted(unique_formats, key=lambda x: str(x['resolution']), reverse=True)
 
             return {
                 "title": video_title,
                 "thumbnail": info.get("thumbnail"),
                 "uploader": info.get("uploader"),
                 "duration": info.get("duration"),
-                "formats": progressive_formats,
+                "source": info.get("extractor_key"),
+                "formats": list(sorted_formats),
             }
 
     except Exception as e:
-        error_msg = str(e).split('\n')[0]
-        # Friendly message for Bot error
-        if "confirm you’re not a bot" in error_msg.lower():
-            error_msg = "YouTube is asking for verification. Please update cookies in Vercel settings."
-            
-        raise HTTPException(status_code=400, detail=f"Error: {error_msg}")
+        error_detail = str(e).split('\n')[0]
+        logger.error(f"Extraction failed for {url}: {error_detail}")
+        
+        # User-friendly error messages
+        clean_error = "Error processing video."
+        if "confirm you’re not a bot" in error_detail.lower():
+            clean_error = "YouTube block. Update cookies in Vercel settings."
+        elif "Unsupported URL" in error_detail:
+            clean_error = "Platform not supported."
+        else:
+            clean_error = error_detail.split(':')[-1].strip()
 
+        raise HTTPException(status_code=400, detail=clean_error)
 
 if __name__ == "__main__":
     import uvicorn
