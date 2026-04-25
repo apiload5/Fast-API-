@@ -30,17 +30,27 @@ async def extract_video(url: str = Query(...)):
 
     try:
         ydl_opts = {
+        ydl_opts = {
             "quiet": True,
+            "no_whitelist": True, # Extra security filter
             "no_warnings": True,
             "cookiefile": cookie_path if os.path.exists(cookie_path) else None,
-            # Windows User-Agent ki jagah ab hum Android User-Agent use karenge
+            
+            # ✅ Powerful Android User-Agent
             "user_agent": "com.google.android.youtube/19.12.35 (Linux; U; Android 14; en_US; Pixel 7 Pro) gzip",
+            
+            # ✅ Format selection (Vercel compatible)
             "format": "best[ext=mp4]/best",
             "nocheckcertificate": True,
             "geo_bypass": True,
+
+            # --- IPv6 & Network Settings ---
+            # '::' ka matlab hai ke system ko force karna ke wo IPv6 address use kare
+            "source_address": "::", 
+            
             "extractor_args": {
                 "youtube": {
-                    # ✅ Ye combo 'Error 152' ko bypass karne ke liye best hai
+                    # ✅ Android + TV combo for bypass
                     "player_client": ["android", "tvhtml5"],
                     "player_skip": ["webpage", "configs"],
                 }
