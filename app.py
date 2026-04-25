@@ -12,11 +12,11 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="SaveMedia Backend",
-    version="1.6",
-    description="Final Optimized Backend for SaveMedia.online"
+    version="1.7",
+    description="Final YouTube & Facebook Fixed Version"
 )
 
-# --- Restricted CORS (As per your request) ---
+# --- Restricted CORS ---
 allowed_origins = [
     "https://savemedia.online",
     "https://www.savemedia.online",
@@ -33,40 +33,46 @@ app.add_middleware(
 
 @app.get("/")
 def home():
-    return {"message": "✅ SaveMedia Backend is fully operational!"}
+    return {"message": "✅ SaveMedia Backend is Active!"}
 
 @app.get("/download")
 def download_video(url: str = Query(..., description="Video URL to extract")):
-    # 1. Cookies Extraction (Vercel Environment Variable se)
+    # 1. Cookies Handling
     cookie_path = "/tmp/cookies.txt"
     cookies_data = os.getenv("COOKIES_CONTENT")
     
     if cookies_data:
         try:
-            with open(cookie_path, "w") as f:
-                f.write(cookies_data)
-            logger.info("Cookies file created successfully in /tmp")
+            # File ko write karna aur permissions set karna
+            with open(cookie_path, "w", encoding="utf-8") as f:
+                f.write(cookies_data.strip())
+            logger.info(f"Cookies initialized. Size: {len(cookies_data)} characters.")
         except Exception as e:
-            logger.error(f"Error writing cookies: {e}")
+            logger.error(f"Cookie setup error: {e}")
 
     try:
-        logger.info(f"Attempting to extract info for: {url}")
+        logger.info(f"Processing Request: {url}")
 
-        # 2. Universal yt-dlp Configuration
+        # 2. Updated Configuration with Latest User-Agent
         ydl_opts = {
             "quiet": True,
             "no_warnings": True,
             "cookiefile": cookie_path if os.path.exists(cookie_path) else None,
-            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-            # 'best' use karne se Facebook ke direct links asani se milte hain
-            "format": "best", 
+            # Bilkul naya User-Agent jo bot detection ko bypass karne me madad karta hai
+            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "format": "best",
+            "extract_flat": False,
+            "http_headers": {
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5",
+                "Sec-Fetch-Mode": "navigate",
+            }
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             video_title = info.get("title", "downloaded_file")
             
-            # YouTube ke liye formats list hoti hai, Facebook ke liye kabhi direct info hoti hai
             raw_formats = info.get("formats", [info])
             processed_formats = []
 
@@ -75,11 +81,8 @@ def download_video(url: str = Query(..., description="Video URL to extract")):
                 if not f_url:
                     continue
 
-                # Video filter (vcodec 'none' na ho ya FB ki CDN link ho)
-                is_video = f.get("vcodec") != "none" or "fbcdn" in f_url or "facebook.com" in f_url
-                
-                if is_video:
-                    # Force download logic (Mime type change)
+                # Filter: Video formats (including Facebook CDN)
+                if f.get("vcodec") != "none" or "fbcdn" in f_url:
                     try:
                         parsed_url = urlparse(f_url)
                         query_params = parse_qs(parsed_url.query)
@@ -100,7 +103,6 @@ def download_video(url: str = Query(..., description="Video URL to extract")):
                         "has_audio": f.get("acodec") != "none" or "fbcdn" in f_url
                     })
 
-            # Duplicate resolutions saaf karna aur sort karna
             unique_formats = {res['resolution']: res for res in processed_formats}.values()
             sorted_formats = sorted(unique_formats, key=lambda x: str(x['resolution']), reverse=True)
 
@@ -109,24 +111,19 @@ def download_video(url: str = Query(..., description="Video URL to extract")):
                 "thumbnail": info.get("thumbnail"),
                 "uploader": info.get("uploader"),
                 "duration": info.get("duration"),
-                "source": info.get("extractor_key"),
                 "formats": list(sorted_formats),
             }
 
     except Exception as e:
-        error_detail = str(e).split('\n')[0]
-        logger.error(f"Extraction failed for {url}: {error_detail}")
+        error_msg = str(e).split('\n')[0]
+        logger.error(f"YT-DLP Error: {error_msg}")
         
-        # User-friendly error messages
-        clean_error = "Error processing video."
-        if "confirm you’re not a bot" in error_detail.lower():
-            clean_error = "YouTube block. Update cookies in Vercel settings."
-        elif "Unsupported URL" in error_detail:
-            clean_error = "Platform not supported."
-        else:
-            clean_error = error_detail.split(':')[-1].strip()
-
-        raise HTTPException(status_code=400, detail=clean_error)
+        # User ko wazeh message dena
+        final_msg = error_msg
+        if "confirm you’re not a bot" in error_msg.lower():
+            final_msg = "YouTube Security Block: Nayi Cookies upload karen Vercel par."
+        
+        raise HTTPException(status_code=400, detail=final_msg)
 
 if __name__ == "__main__":
     import uvicorn
