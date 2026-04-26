@@ -2,239 +2,191 @@ from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import yt_dlp
-import os
-import logging
-import random
-from urllib.parse import urlparse, parse_qs, urlunparse, urlencode
-import aiohttp
 import asyncio
-from datetime import datetime
-from typing import Optional
+import re
+import uvicorn
+from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import urlparse, parse_qs, urlunparse, urlencode
+from typing import List, Dict, Any
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("uvicorn")
+# --- FastAPI App Setup ---
+app = FastAPI(
+    title="SaveMedia Backend",
+    version="2.1",
+    description="Production-ready FastAPI backend for SaveMedia.online — direct downloadable formats only."
+)
 
-app = FastAPI(title="SaveMedia API with Fresh Proxy", version="3.6")
+# --- ThreadPool for blocking yt-dlp calls ---
+executor = ThreadPoolExecutor(max_workers=10)
 
-# CORS for all origins
+# --- Restricted CORS setup ---
+allowed_origins = [
+    "https://savemedia.online",
+    "https://www.savemedia.online",
+    "https://ticnotester.blogspot.com",
+    # "http://localhost:8080", # Uncomment for local testing
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET"],
     allow_headers=["*"],
 )
 
-# Global proxy cache with TTL
-last_proxy = None
-last_proxy_time = None
-PROXY_TTL = 3  # 3 seconds
-
-async def get_fresh_proxy() -> Optional[str]:
-    """Har request ke liye fresh proxy 4 seconds mein"""
-    global last_proxy, last_proxy_time
-    
-    # Check if existing proxy is still fresh (less than 3 seconds old)
-    if last_proxy and last_proxy_time:
-        age = (datetime.now() - last_proxy_time).total_seconds()
-        if age < PROXY_TTL:
-            return last_proxy
-    
-    # Fetch new proxy (free and fast)
-    proxy_urls = [
-        "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
-        "https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS_RAW.txt",
-        "https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=2000&ssl=all"
-    ]
-    
+# --- Helper Functions ---
+def is_safe_url(url: str) -> bool:
+    """SSRF Protection: Block internal/metadata URLs"""
     try:
-        async with aiohttp.ClientSession() as session:
-            for api_url in proxy_urls:
-                try:
-                    # 3 seconds timeout for fetching
-                    async with session.get(api_url, timeout=aiohttp.ClientTimeout(total=3)) as resp:
-                        if resp.status == 200:
-                            text = await resp.text()
-                            proxies = parse_proxy_list(text)
-                            
-                            if proxies:
-                                # Test first working proxy
-                                for proxy in proxies[:5]:  # Try first 5
-                                    if await test_proxy_speed(session, proxy):
-                                        last_proxy = proxy
-                                        last_proxy_time = datetime.now()
-                                        logger.info(f"Fresh proxy obtained: {proxy}")
-                                        return proxy
-                except Exception as e:
-                    logger.warning(f"Proxy source failed: {str(e)[:50]}")
-                    continue
-    except Exception as e:
-        logger.error(f"Proxy fetch error: {e}")
-    
-    return None
-
-def parse_proxy_list(text: str) -> list:
-    """Parse proxy list from text"""
-    proxies = []
-    for line in text.strip().split('\n'):
-        line = line.strip()
-        if ':' in line and not line.startswith('#'):
-            parts = line.split(':')
-            if len(parts) >= 2:
-                proxy_url = f"http://{parts[0]}:{parts[1]}"
-                proxies.append(proxy_url)
-    return proxies
-
-async def test_proxy_speed(session: aiohttp.ClientSession, proxy: str) -> bool:
-    """Test proxy speed (must be under 2 seconds)"""
-    try:
-        start = datetime.now()
-        async with session.get(
-            "https://httpbin.org/ip",
-            proxy=proxy,
-            timeout=aiohttp.ClientTimeout(total=2)
-        ) as resp:
-            if resp.status == 200:
-                elapsed = (datetime.now() - start).total_seconds()
-                return elapsed < 2.0
+        parsed = urlparse(url)
+        if parsed.scheme not in ["http", "https"]:
+            return False
+        blocked_hosts = ["localhost", "127.0.0.1", "169.254.169.254", "0.0.0.0"]
+        if parsed.hostname in blocked_hosts:
+            return False
+        if parsed.hostname and (parsed.hostname.startswith("10.") or parsed.hostname.startswith("192.168.") or parsed.hostname.startswith("172.16.")):
+            return False
+        return True
     except:
-        pass
-    return False
+        return False
 
-@app.get("/")
-async def root():
-    return {
-        "status": "active",
-        "message": "SaveMedia API with Fresh Proxy",
-        "proxy_fresh_interval": f"{PROXY_TTL} seconds"
-    }
+def safe_filename(s: str) -> str:
+    """Remove illegal characters for filenames"""
+    s = re.sub(r'[\\/*?:"<>|]', "", s)
+    return s.strip()[:150] # Limit length
 
-@app.get("/download")
-async def extract_video(url: str = Query(...)):
-    """Extract video with fresh proxy each time"""
-    import time
-    start_time = time.time()
-    
-    # Step 1: Get fresh proxy (under 4 seconds)
-    proxy_start = time.time()
-    proxy_url = await get_fresh_proxy()
-    proxy_time = (time.time() - proxy_start) * 1000
-    
-    cookie_path = "/tmp/cookies.txt"
-    cookies_data = os.getenv("COOKIES_CONTENT")
-    
-    if cookies_data:
-        try:
-            with open(cookie_path, "w", encoding="utf-8") as f:
-                f.write(cookies_data.strip())
-        except: 
-            pass
-
+def add_force_download_param(original_url: str) -> str:
+    """Add mime=application/octet-stream to force download on mobile"""
     try:
-        # Step 2: yt-dlp options with fresh proxy
-        ydl_opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "cookiefile": cookie_path if os.path.exists(cookie_path) else None,
-            "user_agent": random.choice([
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
-                "com.google.android.youtube/19.12.35 (Linux; Android 14) gzip"
-            ]),
-            "format": "best[ext=mp4]/best",
-            "nocheckcertificate": True,
-            "geo_bypass": True,
-            "proxy": proxy_url if proxy_url else None,
-            "extractor_args": {
-                "youtube": {
-                    "player_client": ["android", "ios"],
-                    "player_skip": ["webpage", "configs"]
-                }
+        parsed_url = urlparse(original_url)
+        query_params = parse_qs(parsed_url.query)
+        query_params['mime'] = ['application/octet-stream']
+        new_query = urlencode(query_params, doseq=True)
+        return urlunparse(parsed_url._replace(query=new_query))
+    except Exception:
+        return original_url
+
+def sync_extract_info(url: str) -> Dict[str, Any]:
+    """Blocking yt-dlp call - run this in ThreadPool"""
+    ydl_opts = {
+        "quiet": True,
+        "skip_download": True,
+        "no_warnings": True,
+        "socket_timeout": 12,
+        "source_address": "0.0.0.0", # Force IPv4
+        "extractor_args": {
+            'youtube': {
+                'player_client': ['android', 'web'], # Bypass some blocks
             }
-        }
+        },
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+        },
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        return ydl.extract_info(url, download=False)
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            
-            formats = info.get("formats", [info])
-            processed = []
+def parse_resolution(f: Dict) -> int:
+    """Extract height for sorting. Returns 0 if not found"""
+    if f.get('height'):
+        return int(f['height'])
+    res = f.get('resolution', '0p')
+    if 'x' in res: # 1920x1080 format
+        try:
+            return int(res.split('x')[1])
+        except:
+            return 0
+    return int(res.replace('p', '')) if res.replace('p', '').isdigit() else 0
 
-            for f in formats:
-                f_url = f.get("url")
-                if not f_url: 
-                    continue
+# --- Root route ---
+@app.get("/")
+def home():
+    return {"message": "✅ SaveMedia Backend v2.1 running successfully!"}
 
-                is_youtube = "youtube" in url or "youtu.be" in url
-                has_both = f.get("vcodec") != "none" and f.get("acodec") != "none"
+# --- Health check for Oracle/Fly.io ---
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
 
-                if (is_youtube and has_both) or (not is_youtube and f.get("vcodec") != "none"):
-                    res = f.get("resolution") or (f"{f.get('height')}p" if f.get('height') else "HD")
+# --- Main Download Endpoint ---
+@app.get("/download")
+async def download_video(url: str = Query(..., description="Video URL to extract downloadable info")):
+    # 1. SSRF Validation
+    if not is_safe_url(url):
+        raise HTTPException(status_code=400, detail="Invalid or blocked URL")
 
-                    processed.append({
-                        "resolution": res,
-                        "ext": f.get("ext", "mp4"),
-                        "url": f_url,
-                        "filesize": f.get("filesize") or f.get("filesize_approx"),
-                        "format_note": f.get("format_note") or "Standard"
-                    })
+    loop = asyncio.get_event_loop()
+    try:
+        # 2. Run blocking yt-dlp in ThreadPool to avoid server freeze
+        info = await loop.run_in_executor(executor, sync_extract_info, url)
 
-            # Remove duplicates
-            unique_list = {}
-            for item in processed:
-                if item['resolution'] not in unique_list:
-                    unique_list[item['resolution']] = item
-            
-            final_formats = sorted(unique_list.values(), key=lambda x: str(x['resolution']), reverse=True)
+        video_title = safe_filename(info.get("title", "downloaded_file"))
+        progressive_formats: List[Dict] = []
 
-            total_time = (time.time() - start_time) * 1000
-            
-            return {
-                "title": info.get("title", "Video"),
-                "thumbnail": info.get("thumbnail"),
-                "duration": info.get("duration"),
-                "uploader": info.get("uploader"),
-                "formats": final_formats[:5],  # Limit to 5 formats for speed
-                "proxy_used": bool(proxy_url),
-                "proxy_fetch_time_ms": round(proxy_time, 2),
-                "total_time_ms": round(total_time, 2),
-                "proxy_fresh": True
-            }
+        # 3. Filter only progressive formats (video+audio combined)
+        for f in info.get("formats", []):
+            original_url = f.get("url")
+            if not original_url:
+                continue
+
+            # Progressive = has both audio and video
+            if f.get("acodec")!= "none" and f.get("vcodec")!= "none":
+                force_download_url = add_force_download_param(original_url)
+                height = parse_resolution(f)
+
+                progressive_formats.append({
+                    "format_id": f.get("format_id"),
+                    "ext": f.get("ext", "mp4"),
+                    "format_note": f.get("format_note"),
+                    "filesize": f.get("filesize") or f.get("filesize_approx"),
+                    "url": original_url,
+                    "force_download_url": force_download_url,
+                    "resolution": f"{height}p" if height else f.get("resolution"),
+                    "height": height,
+                    "suggested_filename": f"{video_title}.{f.get('ext', 'mp4')}",
+                })
+
+        if not progressive_formats:
+            raise HTTPException(
+                status_code=404,
+                detail="No direct downloadable formats found. Video may be DASH-only."
+            )
+
+        # 4. Sort by resolution - highest first
+        progressive_formats.sort(key=lambda x: x['height'], reverse=True)
+
+        # Remove 'height' key before sending response
+        for f in progressive_formats:
+            del f['height']
+
+        return JSONResponse(content={
+            "title": info.get("title"),
+            "thumbnail": info.get("thumbnail"),
+            "uploader": info.get("uploader"),
+            "duration": info.get("duration"),
+            "webpage_url": info.get("webpage_url"),
+            "formats": progressive_formats,
+        })
+
+    except yt_dlp.utils.DownloadError as e:
+        error_msg = str(e).split('\n')[0]
+        # Clean up common yt-dlp errors for user
+        if "Private video" in error_msg:
+            error_msg = "This video is private"
+        elif "Video unavailable" in error_msg:
+            error_msg = "Video is unavailable or removed"
+        elif "Sign in to confirm" in error_msg:
+            error_msg = "Age-restricted or sign-in required video"
+        elif "Unsupported URL" in error_msg:
+            error_msg = "Unsupported website or invalid URL"
+
+        raise HTTPException(status_code=400, detail=f"Error: {error_msg}")
 
     except Exception as e:
-        error_msg = str(e).split('\n')[0]
-        logger.error(f"Error: {error_msg}")
-        
-        # Retry without proxy if proxy failed
-        if "proxy" in error_msg.lower() or "connection" in error_msg.lower():
-            try:
-                logger.info("Retrying without proxy...")
-                ydl_opts_no_proxy = {
-                    "quiet": True,
-                    "no_warnings": True,
-                    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                    "format": "best[ext=mp4]/best",
-                }
-                with yt_dlp.YoutubeDL(ydl_opts_no_proxy) as ydl:
-                    info = ydl.extract_info(url, download=False)
-                    return {
-                        "title": info.get("title", "Video"),
-                        "using_proxy": False,
-                        "fallback": True
-                    }
-            except Exception as e2:
-                raise HTTPException(status_code=400, detail=str(e2))
-        
-        raise HTTPException(status_code=400, detail=error_msg)
+        raise HTTPException(status_code=500, detail=f"Server error: {str(e)[:100]}")
 
-@app.get("/proxy-status")
-async def check_proxy():
-    """Quick proxy status check"""
-    start = time.time()
-    proxy = await get_fresh_proxy()
-    elapsed = (time.time() - start) * 1000
-    
-    return {
-        "proxy_available": bool(proxy),
-        "fetch_time_ms": round(elapsed, 2),
-        "under_4_seconds": elapsed < 4000,
-        "proxy_url": proxy if proxy else None
-    }
+# --- Run Server ---
+if __name__ == "__main__":
+    # Oracle/Fly.io پر چلانے کے لیے
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)
