@@ -3,15 +3,15 @@ from fastapi.middleware.cors import CORSMiddleware
 import yt_dlp
 import os
 import logging
-import random
 from urllib.parse import urlparse, parse_qs, urlunparse, urlencode
 
+# Logging setup for Vercel dashboard
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("uvicorn")
 
-app = FastAPI(title="SaveMedia Ultimate API", version="4.0")
+app = FastAPI(title="SaveMedia Ultimate API", version="4.1")
 
-# CORS Settings
+# Restricted CORS for security
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://savemedia.online", "https://www.savemedia.online", "https://ticnotester.blogspot.com"],
@@ -26,7 +26,7 @@ async def extract_video(url: str = Query(...)):
     cookies_data = os.getenv("COOKIES_CONTENT")
     proxy_url = os.getenv("PROXY_URL")
     
-    # Setup Cookies
+    # Setup Cookies from Environment Variable
     if cookies_data:
         try:
             with open(cookie_path, "w", encoding="utf-8") as f:
@@ -40,33 +40,32 @@ async def extract_video(url: str = Query(...)):
             "no_warnings": True,
             "cookiefile": cookie_path if os.path.exists(cookie_path) else None,
             
-            # ✅ Sabse takatwar Android User-Agent
+            # Powerful Android User-Agent to mimic real app traffic
             "user_agent": "com.google.android.youtube/19.12.35 (Linux; U; Android 14; en_US; Pixel 7 Pro) gzip",
             
-            # ✅ Format selection (Vercel compatible - No FFmpeg needed)
+            # Format: prioritizing merged MP4 for Vercel compatibility (no FFmpeg needed)
             "format": "best[vcodec!=none][acodec!=none][ext=mp4]/best",
             
             "nocheckcertificate": True,
             "geo_bypass": True,
             
-            # ✅ Network Fixes
+            # ✅ Fixed Network Config
             "proxy": proxy_url if proxy_url else None,
-            "source_address": "::", # Force IPv6 for bypass
+            # source_address removed to fix DNS resolution error (-9)
             
-            # ✅ Plugin aur Token support
+            # ✅ Plugin & Token support (if yt-dlp-get-pot is in requirements.txt)
             "plugin_dirs": ["/tmp/yt-dlp-plugins"], 
             
             "extractor_args": {
                 "youtube": {
                     "player_client": ["android", "ios", "tvhtml5"],
                     "player_skip": ["webpage", "configs"],
-                    # PO Token generate karne ki koshish (Requires yt-dlp-get-pot)
                 }
             }
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # Step 1: Extract Information
+            # Data Extraction
             info = ydl.extract_info(url, download=False)
             
             formats = info.get("formats", [info])
@@ -77,14 +76,13 @@ async def extract_video(url: str = Query(...)):
                 if not f_url: continue
 
                 is_youtube = "youtube" in url or "youtu.be" in url
-                # YouTube ke liye merged formats, baqi ke liye simple
                 has_both = f.get("vcodec") != "none" and f.get("acodec") != "none"
 
+                # Filter for merged formats for YouTube, any video for others
                 if (is_youtube and has_both) or (not is_youtube and f.get("vcodec") != "none"):
-                    # Resolution handle karein
                     res = f.get("resolution") or (f"{f.get('height')}p" if f.get('height') else "HD")
                     
-                    # Force Download Link Generator
+                    # Force Download link logic (injecting octet-stream)
                     try:
                         p = urlparse(f_url); q = parse_qs(p.query)
                         q['mime'] = ['application/octet-stream']
@@ -101,7 +99,7 @@ async def extract_video(url: str = Query(...)):
                         "format_note": f.get("format_note") or "Standard"
                     })
 
-            # Duplicate remove karein aur resolution ke hisab se sort karein
+            # Duplicate cleaning & Sorting by resolution
             unique_list = {res['resolution']: res for res in processed}.values()
             final_formats = sorted(unique_list, key=lambda x: str(x['resolution']), reverse=True)
 
@@ -113,13 +111,12 @@ async def extract_video(url: str = Query(...)):
                 "uploader": info.get("uploader"),
                 "formats": list(final_formats),
                 "debug": {
-                    "proxy": bool(proxy_url),
-                    "ipv6": True
+                    "proxy_active": bool(proxy_url),
+                    "server_region": "iad1"
                 }
             }
 
     except Exception as e:
         error_msg = str(e).split('\n')[0]
-        # Agar IPv6 region mein support nahi hai to retry logic manual karein (0.0.0.0 par wapis jayen)
         logger.error(f"Critical API Error: {error_msg}")
         raise HTTPException(status_code=400, detail=error_msg)
