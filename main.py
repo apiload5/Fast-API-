@@ -5,6 +5,8 @@ import yt_dlp
 import asyncio
 import re
 import uvicorn
+import os
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse, parse_qs, urlunparse, urlencode
 from typing import List, Dict, Any
@@ -12,8 +14,8 @@ from typing import List, Dict, Any
 # --- FastAPI App Setup ---
 app = FastAPI(
     title="SaveMedia Backend",
-    version="5.1",
-    description="Production-ready FastAPI backend for SaveMedia.online — direct downloadable formats only."
+    version="2.2",
+    description="Production-ready FastAPI backend for SaveMedia.online — with Cookie Support."
 )
 
 # --- ThreadPool for blocking yt-dlp calls ---
@@ -24,7 +26,6 @@ allowed_origins = [
     "https://savemedia.online",
     "https://www.savemedia.online",
     "https://ticnotester.blogspot.com",
-    # "http://localhost:8080", # Uncomment for local testing
 ]
 
 app.add_middleware(
@@ -37,7 +38,6 @@ app.add_middleware(
 
 # --- Helper Functions ---
 def is_safe_url(url: str) -> bool:
-    """SSRF Protection: Block internal/metadata URLs"""
     try:
         parsed = urlparse(url)
         if parsed.scheme not in ["http", "https"]:
@@ -45,19 +45,15 @@ def is_safe_url(url: str) -> bool:
         blocked_hosts = ["localhost", "127.0.0.1", "169.254.169.254", "0.0.0.0"]
         if parsed.hostname in blocked_hosts:
             return False
-        if parsed.hostname and (parsed.hostname.startswith("10.") or parsed.hostname.startswith("192.168.") or parsed.hostname.startswith("172.16.")):
-            return False
         return True
     except:
         return False
 
 def safe_filename(s: str) -> str:
-    """Remove illegal characters for filenames"""
     s = re.sub(r'[\\/*?:"<>|]', "", s)
-    return s.strip()[:150] # Limit length
+    return s.strip()[:150]
 
 def add_force_download_param(original_url: str) -> str:
-    """Add mime=application/octet-stream to force download on mobile"""
     try:
         parsed_url = urlparse(original_url)
         query_params = parse_qs(parsed_url.query)
@@ -67,71 +63,81 @@ def add_force_download_param(original_url: str) -> str:
     except Exception:
         return original_url
 
-def sync_extract_info(url: str) -> Dict[str, Any]:
-    """Blocking yt-dlp call - run this in ThreadPool"""
-    ydl_opts = {
-        "quiet": True,
-        "skip_download": True,
-        "no_warnings": True,
-        "socket_timeout": 12,
-        "source_address": "0.0.0.0", # Force IPv4
-        "extractor_args": {
-            'youtube': {
-                'player_client': ['android', 'web'], # Bypass some blocks
-            }
-        },
-        "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
-        },
-    }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        return ydl.extract_info(url, download=False)
-
 def parse_resolution(f: Dict) -> int:
-    """Extract height for sorting. Returns 0 if not found"""
     if f.get('height'):
         return int(f['height'])
     res = f.get('resolution', '0p')
-    if 'x' in res: # 1920x1080 format
+    if 'x' in res:
         try:
             return int(res.split('x')[1])
         except:
             return 0
     return int(res.replace('p', '')) if res.replace('p', '').isdigit() else 0
 
-# --- Root route ---
+def sync_extract_info(url: str) -> Dict[str, Any]:
+    """Blocking yt-dlp call with Environment Cookie Support"""
+    
+    # Vercel environment se cookies uthana
+    cookies_content = os.getenv("YOUTUBE_COOKIES")
+    temp_cookie_path = None
+
+    # Agar cookies maujood hain, to ek temporary file banana
+    if cookies_content:
+        fd, temp_cookie_path = tempfile.mkstemp(suffix=".txt")
+        with os.fdopen(fd, 'w') as f:
+            f.write(cookies_content)
+
+    ydl_opts = {
+        "quiet": True,
+        "skip_download": True,
+        "no_warnings": True,
+        "cookiefile": temp_cookie_path, # Cookies yahan istemal ho rahi hain
+        "socket_timeout": 15,
+        "source_address": "0.0.0.0",
+        "extractor_args": {
+            'youtube': {
+                'player_client': ['android', 'web'],
+            }
+        },
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+        },
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            return ydl.extract_info(url, download=False)
+    finally:
+        # File delete karna taaki storage saaf rahe
+        if temp_cookie_path and os.path.exists(temp_cookie_path):
+            os.remove(temp_cookie_path)
+
+# --- Routes ---
 @app.get("/")
 def home():
-    return {"message": "✅ SaveMedia Backend v2.1 running successfully!"}
+    return {"message": "✅ SaveMedia Backend v5.1 (Cookies Enabled) running successfully!"}
 
-# --- Health check for Oracle/Fly.io ---
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
 
-# --- Main Download Endpoint ---
 @app.get("/download")
-async def download_video(url: str = Query(..., description="Video URL to extract downloadable info")):
-    # 1. SSRF Validation
+async def download_video(url: str = Query(..., description="Video URL")):
     if not is_safe_url(url):
         raise HTTPException(status_code=400, detail="Invalid or blocked URL")
 
     loop = asyncio.get_event_loop()
     try:
-        # 2. Run blocking yt-dlp in ThreadPool to avoid server freeze
         info = await loop.run_in_executor(executor, sync_extract_info, url)
 
         video_title = safe_filename(info.get("title", "downloaded_file"))
         progressive_formats: List[Dict] = []
 
-        # 3. Filter only progressive formats (video+audio combined)
         for f in info.get("formats", []):
             original_url = f.get("url")
-            if not original_url:
-                continue
+            if not original_url: continue
 
-            # Progressive = has both audio and video
-            if f.get("acodec")!= "none" and f.get("vcodec")!= "none":
+            if f.get("acodec") != "none" and f.get("vcodec") != "none":
                 force_download_url = add_force_download_param(original_url)
                 height = parse_resolution(f)
 
@@ -148,17 +154,10 @@ async def download_video(url: str = Query(..., description="Video URL to extract
                 })
 
         if not progressive_formats:
-            raise HTTPException(
-                status_code=404,
-                detail="No direct downloadable formats found. Video may be DASH-only."
-            )
+            raise HTTPException(status_code=404, detail="No direct downloadable formats found.")
 
-        # 4. Sort by resolution - highest first
         progressive_formats.sort(key=lambda x: x['height'], reverse=True)
-
-        # Remove 'height' key before sending response
-        for f in progressive_formats:
-            del f['height']
+        for f in progressive_formats: del f['height']
 
         return JSONResponse(content={
             "title": info.get("title"),
@@ -171,22 +170,9 @@ async def download_video(url: str = Query(..., description="Video URL to extract
 
     except yt_dlp.utils.DownloadError as e:
         error_msg = str(e).split('\n')[0]
-        # Clean up common yt-dlp errors for user
-        if "Private video" in error_msg:
-            error_msg = "This video is private"
-        elif "Video unavailable" in error_msg:
-            error_msg = "Video is unavailable or removed"
-        elif "Sign in to confirm" in error_msg:
-            error_msg = "Age-restricted or sign-in required video"
-        elif "Unsupported URL" in error_msg:
-            error_msg = "Unsupported website or invalid URL"
-
         raise HTTPException(status_code=400, detail=f"Error: {error_msg}")
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)[:100]}")
 
-# --- Run Server ---
 if __name__ == "__main__":
-    # Oracle/Fly.io پر چلانے کے لیے
-    uvicorn.run("main:app", host="0.0.0.0", port=8080, reload=False)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000)
