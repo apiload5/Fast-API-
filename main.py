@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Query, HTTPException
+pfrom fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import yt_dlp
@@ -189,4 +189,4 @@ async def download_video(url: str = Query(..., description="Video URL to extract
 # --- Run Server ---
 if __name__ == "__main__":
     # Oracle/Fly.io پر چلانے کے لیے
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)
+    uvicorn.run("main:app", host="0.0.0.0", port=8080, reload=False)
