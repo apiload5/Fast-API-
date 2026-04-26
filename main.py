@@ -1,4 +1,4 @@
-pfrom fastapi import FastAPI, Query, HTTPException
+from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import yt_dlp
@@ -12,7 +12,7 @@ from typing import List, Dict, Any
 # --- FastAPI App Setup ---
 app = FastAPI(
     title="SaveMedia Backend",
-    version="2.1",
+    version="5.1",
     description="Production-ready FastAPI backend for SaveMedia.online — direct downloadable formats only."
 )
 
