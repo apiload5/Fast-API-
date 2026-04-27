@@ -11,17 +11,11 @@ from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse, parse_qs, urlunparse, urlencode
 from typing import List, Dict, Any
 
-# --- FastAPI App Setup ---
-app = FastAPI(
-    title="SaveMedia Backend",
-    version="6.1",
-    description="Final Version - Secure CORS & Robust Format Support"
-)
+app = FastAPI(title="SaveMedia Ultra-Stable")
 
-# --- ThreadPool ---
 executor = ThreadPoolExecutor(max_workers=10)
 
-# --- Restricted CORS (Back Again!) ---
+# CORS Settings
 allowed_origins = [
     "https://savemedia.online",
     "https://www.savemedia.online",
@@ -36,16 +30,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Helper Functions ---
 def is_safe_url(url: str) -> bool:
     try:
         parsed = urlparse(url)
         return parsed.scheme in ["http", "https"]
     except: return False
-
-def safe_filename(s: str) -> str:
-    s = re.sub(r'[\\/*?:"<>|]', "", s)
-    return s.strip()[:150]
 
 def add_force_download_param(url: str) -> str:
     try:
@@ -55,16 +44,7 @@ def add_force_download_param(url: str) -> str:
         return urlunparse(p._replace(query=urlencode(q, doseq=True)))
     except: return url
 
-def parse_resolution(f: Dict) -> int:
-    h = f.get('height')
-    if h: return int(h)
-    res = str(f.get('resolution', '0'))
-    m = re.search(r'(\d+)', res)
-    return int(m.group(1)) if m else 0
-
-# --- Core Extraction Logic ---
 def sync_extract_info(url: str) -> Dict[str, Any]:
-    # Vercel Settings se cookies uthana
     cookies_content = os.getenv("YOUTUBE_COOKIES")
     temp_cookie_path = None
 
@@ -77,13 +57,15 @@ def sync_extract_info(url: str) -> Dict[str, Any]:
         "quiet": True,
         "no_warnings": True,
         "cookiefile": temp_cookie_path,
-        # Sab se flexible format string
-        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/b*", 
+        # سب سے اہم تبدیلی: یہ کسی بھی دستیاب فائل کو اٹھا لے گا بغیر نخرے کیے
+        "format": "b/best", 
         "socket_timeout": 30,
         "nocheckcertificate": True,
+        "ignoreerrors": True,
         "extractor_args": {
             'youtube': {
-                'player_client': ['tv', 'web', 'android'],
+                # 'ios' اور 'android' کو 'web' کے ساتھ ملا کر استعمال کرنا
+                'player_client': ['web', 'ios', 'android', 'tv'],
                 'skip': ['hls', 'dash']
             }
         },
@@ -94,15 +76,14 @@ def sync_extract_info(url: str) -> Dict[str, Any]:
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            return ydl.extract_info(url, download=False)
+            # extract_info کو فیل نہیں ہونے دینا
+            result = ydl.extract_info(url, download=False)
+            if not result:
+                raise Exception("Could not extract info. YouTube is blocking this request.")
+            return result
     finally:
         if temp_cookie_path and os.path.exists(temp_cookie_path):
             os.remove(temp_cookie_path)
-
-# --- Routes ---
-@app.get("/")
-def home():
-    return {"status": "Active", "site": "savemedia.online", "version": "6.1"}
 
 @app.get("/download")
 async def download_api(url: str = Query(..., description="Video URL")):
@@ -113,53 +94,45 @@ async def download_api(url: str = Query(..., description="Video URL")):
     try:
         info = await loop.run_in_executor(executor, sync_extract_info, url)
         
-        video_title = safe_filename(info.get("title", "video"))
         formats_data = []
-
-        # Filter and parse formats
+        # تمام دستیاب فارمیٹس کو دکھانا تاکہ صارف کوئی بھی ڈاؤن لوڈ کر سکے
         for f in info.get("formats", []):
             f_url = f.get("url")
             if not f_url: continue
 
-            # Progressive formats checking
-            if f.get("vcodec") != "none" and f.get("acodec") != "none":
-                res = parse_resolution(f)
-                formats_data.append({
-                    "format_id": f.get("format_id"),
-                    "ext": f.get("ext", "mp4"),
-                    "resolution": f"{res}p" if res else "Standard",
-                    "filesize": f.get("filesize") or f.get("filesize_approx"),
-                    "url": f_url,
-                    "force_download_url": add_force_download_param(f_url),
-                    "height": res
-                })
+            # ریزولیوشن نکالنے کی سادہ کوشش
+            height = f.get('height') or 0
+            
+            formats_data.append({
+                "format_id": f.get("format_id"),
+                "ext": f.get("ext", "mp4"),
+                "resolution": f"{height}p" if height else "Unknown",
+                "url": f_url,
+                "force_download_url": add_force_download_param(f_url),
+                "height": height
+            })
 
-        # Fallback if no progressive formats found
-        if not formats_data:
-            best_url = info.get("url")
-            if best_url:
-                formats_data.append({
-                    "format_id": "best",
-                    "ext": info.get("ext", "mp4"),
-                    "resolution": "Best Available",
-                    "url": best_url,
-                    "force_download_url": add_force_download_param(best_url),
-                    "height": 0
-                })
+        # اگر لسٹ خالی ہو تو بنیادی ڈیٹا ڈال دیں
+        if not formats_data and info.get("url"):
+            formats_data.append({
+                "format_id": "best",
+                "ext": info.get("ext", "mp4"),
+                "resolution": "Best",
+                "url": info.get("url"),
+                "force_download_url": add_force_download_param(info.get("url")),
+                "height": 0
+            })
 
         formats_data.sort(key=lambda x: x['height'], reverse=True)
 
         return {
             "title": info.get("title"),
             "thumbnail": info.get("thumbnail"),
-            "uploader": info.get("uploader"),
-            "duration": info.get("duration"),
             "formats": formats_data
         }
 
     except Exception as e:
-        clean_error = str(e).split('\n')[0]
-        raise HTTPException(status_code=400, detail=clean_error)
+        raise HTTPException(status_code=400, detail=str(e))
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8080)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
