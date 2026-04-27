@@ -1,16 +1,18 @@
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 import yt_dlp
 import asyncio
 import os
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse, parse_qs, urlunparse, urlencode
-from typing import Dict, Any, List
+from typing import Dict, Any
 
-# --- App Setup ---
-app = FastAPI(title="SaveMedia Backend v8.0 - Format-Free Mode")
+# --- Configuration ---
+# اپنا کلاؤڈ فلیئر ورکر لنک یہاں ڈالیں (آخر میں ?url= لازمی ہو)
+WORKER_PROXY = "https://white-fire-28ec.muhammadyasirkhursheedahmed.workers.dev/?url="
+
+app = FastAPI(title="SaveMedia Ultra-Proxy Edition")
 executor = ThreadPoolExecutor(max_workers=5)
 
 # --- Restricted CORS ---
@@ -22,7 +24,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Helper ---
 def add_force_download_param(url: str) -> str:
     try:
         p = urlparse(url)
@@ -43,17 +44,17 @@ def sync_extract_info(url: str) -> Dict[str, Any]:
         "quiet": True,
         "no_warnings": True,
         "cookiefile": temp_cookie_path,
-        
-        # --- SOLUTION: Error se bachne ke liye format ko 'best' rakhen ---
-        "format": "best/bestvideo+bestaudio", 
+        "format": "best/bestvideo+bestaudio",
         "ignoreerrors": True,
+        # ورکر کو بطور پراکسی استعمال کرنا تاکہ یوٹیوب کو سرور کا IP نہ ملے
+        "proxy": WORKER_PROXY, 
         "socket_timeout": 30,
         
-        # PO Token Automation
+        # Automatic PO Token Generation
         "plugin_extractors": ["get_pot"],
         "extractor_args": {
             'youtube': {
-                'player_client': ['web', 'ios', 'tv'],
+                'player_client': ['web', 'ios', 'android'],
                 'skip': ['hls', 'dash'],
                 'po_token': ['web+generated', 'ios+generated']
             }
@@ -67,13 +68,12 @@ def sync_extract_info(url: str) -> Dict[str, Any]:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             result = ydl.extract_info(url, download=False)
             if not result:
-                raise Exception("YouTube is blocking this request. Check your cookies.")
+                raise Exception("Data extraction failed through proxy.")
             return result
     finally:
         if temp_cookie_path and os.path.exists(temp_cookie_path):
             os.remove(temp_cookie_path)
 
-# --- Routes ---
 @app.get("/download")
 async def download_api(url: str = Query(..., description="Video URL")):
     loop = asyncio.get_event_loop()
@@ -81,16 +81,11 @@ async def download_api(url: str = Query(..., description="Video URL")):
         info = await loop.run_in_executor(executor, sync_extract_info, url)
         
         formats_data = []
-        # Jo bhi formats available hain unki list banana
-        formats = info.get("formats", [])
-        
-        for f in formats:
+        for f in info.get("formats", []):
             f_url = f.get("url")
             if not f_url: continue
             
-            # Resolution handling
             height = f.get('height') or 0
-            
             formats_data.append({
                 "format_id": f.get("format_id"),
                 "ext": f.get("ext", "mp4"),
@@ -100,30 +95,16 @@ async def download_api(url: str = Query(..., description="Video URL")):
                 "height": height
             })
 
-        # Agar progressive formats na milen to single best output de do
-        if not formats_data:
-             formats_data.append({
-                "format_id": "best",
-                "ext": info.get("ext", "mp4"),
-                "resolution": "Best Available",
-                "url": info.get("url"),
-                "force_download_url": add_force_download_param(info.get("url")),
-                "height": 0
-            })
-
-        # Highest resolution first
         formats_data.sort(key=lambda x: x['height'], reverse=True)
 
         return {
             "title": info.get("title"),
             "thumbnail": info.get("thumbnail"),
-            "uploader": info.get("uploader"),
             "duration": info.get("duration"),
-            "formats": formats_data
+            "formats": formats_data[:15] # ٹاپ 15 بہترین فارمیٹس
         }
     except Exception as e:
-        error_msg = str(e).split('\n')[0]
-        raise HTTPException(status_code=400, detail=f"Error: {error_msg}")
+        raise HTTPException(status_code=400, detail=str(e).split('\n')[0])
 
 if __name__ == "__main__":
     import uvicorn
