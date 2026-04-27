@@ -7,12 +7,13 @@ import os
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse, parse_qs, urlunparse, urlencode
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 # --- App Setup ---
-app = FastAPI(title="SaveMedia Backend v7.0 - PO Token & Secure")
+app = FastAPI(title="SaveMedia Backend v8.0 - Format-Free Mode")
 executor = ThreadPoolExecutor(max_workers=5)
 
+# --- Restricted CORS ---
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://savemedia.online", "https://www.savemedia.online", "https://ticnotester.blogspot.com"],
@@ -31,7 +32,6 @@ def add_force_download_param(url: str) -> str:
     except: return url
 
 def sync_extract_info(url: str) -> Dict[str, Any]:
-    # Cookies & PO Token Handling
     cookies_content = os.getenv("YOUTUBE_COOKIES")
     temp_cookie_path = None
     if cookies_content:
@@ -43,14 +43,19 @@ def sync_extract_info(url: str) -> Dict[str, Any]:
         "quiet": True,
         "no_warnings": True,
         "cookiefile": temp_cookie_path,
-        "format": "b/best",
+        
+        # --- SOLUTION: Error se bachne ke liye format ko 'best' rakhen ---
+        "format": "best/bestvideo+bestaudio", 
+        "ignoreerrors": True,
         "socket_timeout": 30,
-        # PO Token Generation Integration
+        
+        # PO Token Automation
+        "plugin_extractors": ["get_pot"],
         "extractor_args": {
             'youtube': {
-                'player_client': ['web', 'android'],
+                'player_client': ['web', 'ios', 'tv'],
                 'skip': ['hls', 'dash'],
-                'po_token': ['web+generated']
+                'po_token': ['web+generated', 'ios+generated']
             }
         },
         "http_headers": {
@@ -60,7 +65,10 @@ def sync_extract_info(url: str) -> Dict[str, Any]:
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            return ydl.extract_info(url, download=False)
+            result = ydl.extract_info(url, download=False)
+            if not result:
+                raise Exception("YouTube is blocking this request. Check your cookies.")
+            return result
     finally:
         if temp_cookie_path and os.path.exists(temp_cookie_path):
             os.remove(temp_cookie_path)
@@ -73,27 +81,49 @@ async def download_api(url: str = Query(..., description="Video URL")):
         info = await loop.run_in_executor(executor, sync_extract_info, url)
         
         formats_data = []
-        for f in info.get("formats", []):
+        # Jo bhi formats available hain unki list banana
+        formats = info.get("formats", [])
+        
+        for f in formats:
             f_url = f.get("url")
             if not f_url: continue
+            
+            # Resolution handling
+            height = f.get('height') or 0
             
             formats_data.append({
                 "format_id": f.get("format_id"),
                 "ext": f.get("ext", "mp4"),
-                "resolution": f"{f.get('height', 0)}p",
+                "resolution": f"{height}p" if height else "Standard",
                 "url": f_url,
                 "force_download_url": add_force_download_param(f_url),
-                "height": f.get('height', 0)
+                "height": height
             })
 
+        # Agar progressive formats na milen to single best output de do
+        if not formats_data:
+             formats_data.append({
+                "format_id": "best",
+                "ext": info.get("ext", "mp4"),
+                "resolution": "Best Available",
+                "url": info.get("url"),
+                "force_download_url": add_force_download_param(info.get("url")),
+                "height": 0
+            })
+
+        # Highest resolution first
         formats_data.sort(key=lambda x: x['height'], reverse=True)
+
         return {
             "title": info.get("title"),
             "thumbnail": info.get("thumbnail"),
+            "uploader": info.get("uploader"),
+            "duration": info.get("duration"),
             "formats": formats_data
         }
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        error_msg = str(e).split('\n')[0]
+        raise HTTPException(status_code=400, detail=f"Error: {error_msg}")
 
 if __name__ == "__main__":
     import uvicorn
