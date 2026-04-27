@@ -9,13 +9,13 @@ from urllib.parse import urlparse, parse_qs, urlunparse, urlencode
 from typing import Dict, Any
 
 # --- Configuration ---
-# اپنا کلاؤڈ فلیئر ورکر لنک یہاں ڈالیں (آخر میں ?url= لازمی ہو)
+# اپنے کلاؤڈ فلیئر ورکر کا لنک یہاں ڈالیں
 WORKER_PROXY = "https://white-fire-28ec.muhammadyasirkhursheedahmed.workers.dev/?url="
 
-app = FastAPI(title="SaveMedia Ultra-Proxy Edition")
+app = FastAPI(title="SaveMedia Ultra Backend v10.0")
 executor = ThreadPoolExecutor(max_workers=5)
 
-# --- Restricted CORS ---
+# --- CORS Settings ---
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://savemedia.online", "https://www.savemedia.online", "https://ticnotester.blogspot.com"],
@@ -24,6 +24,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- Helpers ---
 def add_force_download_param(url: str) -> str:
     try:
         p = urlparse(url)
@@ -35,45 +36,71 @@ def add_force_download_param(url: str) -> str:
 def sync_extract_info(url: str) -> Dict[str, Any]:
     cookies_content = os.getenv("YOUTUBE_COOKIES")
     temp_cookie_path = None
+    
     if cookies_content:
         fd, temp_cookie_path = tempfile.mkstemp(suffix=".txt")
         with os.fdopen(fd, 'w') as f:
             f.write(cookies_content)
 
-    ydl_opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "cookiefile": temp_cookie_path,
-        "format": "best/bestvideo+bestaudio",
-        "ignoreerrors": True,
-        # ورکر کو بطور پراکسی استعمال کرنا تاکہ یوٹیوب کو سرور کا IP نہ ملے
-        "proxy": WORKER_PROXY, 
-        "socket_timeout": 30,
-        
-        # Automatic PO Token Generation
-        "plugin_extractors": ["get_pot"],
-        "extractor_args": {
-            'youtube': {
-                'player_client': ['web', 'ios', 'android'],
-                'skip': ['hls', 'dash'],
-                'po_token': ['web+generated', 'ios+generated']
-            }
+    # دو مختلف طریقے (Strategies)
+    options_list = [
+        # Strategy 1: Cloudflare Worker Proxy + Web Client
+        {
+            "proxy": WORKER_PROXY,
+            "format": "best",
+            "plugin_extractors": ["get_pot"],
+            "extractor_args": {
+                'youtube': {
+                    'player_client': ['web'], 
+                    'po_token': ['web+generated']
+                }
+            },
         },
-        "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-        },
-    }
+        # Strategy 2: Direct Server + iOS/Android Client (Afsar bhot kam block hota hai)
+        {
+            "format": "best",
+            "plugin_extractors": ["get_pot"],
+            "extractor_args": {
+                'youtube': {
+                    'player_client': ['ios', 'android'], 
+                    'po_token': ['ios+generated']
+                }
+            },
+        }
+    ]
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            result = ydl.extract_info(url, download=False)
-            if not result:
-                raise Exception("Data extraction failed through proxy.")
-            return result
-    finally:
-        if temp_cookie_path and os.path.exists(temp_cookie_path):
-            os.remove(temp_cookie_path)
+    last_error = ""
+    result = None
 
+    for opts in options_list:
+        common_opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "cookiefile": temp_cookie_path,
+            "socket_timeout": 25,
+            "nocheckcertificate": True,
+        }
+        common_opts.update(opts)
+
+        try:
+            with yt_dlp.YoutubeDL(common_opts) as ydl:
+                result = ydl.extract_info(url, download=False)
+                if result:
+                    break # Agar data mil gaya to loop khatam kar do
+        except Exception as e:
+            last_error = str(e).split('\n')[0]
+            continue
+
+    # Clean up cookie file
+    if temp_cookie_path and os.path.exists(temp_cookie_path):
+        os.remove(temp_cookie_path)
+
+    if not result:
+        raise Exception(f"Extraction failed: {last_error}")
+    
+    return result
+
+# --- API Route ---
 @app.get("/download")
 async def download_api(url: str = Query(..., description="Video URL")):
     loop = asyncio.get_event_loop()
@@ -81,7 +108,9 @@ async def download_api(url: str = Query(..., description="Video URL")):
         info = await loop.run_in_executor(executor, sync_extract_info, url)
         
         formats_data = []
-        for f in info.get("formats", []):
+        formats = info.get("formats", [])
+        
+        for f in formats:
             f_url = f.get("url")
             if not f_url: continue
             
@@ -95,16 +124,19 @@ async def download_api(url: str = Query(..., description="Video URL")):
                 "height": height
             })
 
+        # Sort: Highest resolution at top
         formats_data.sort(key=lambda x: x['height'], reverse=True)
 
         return {
+            "status": "success",
             "title": info.get("title"),
             "thumbnail": info.get("thumbnail"),
+            "uploader": info.get("uploader"),
             "duration": info.get("duration"),
-            "formats": formats_data[:15] # ٹاپ 15 بہترین فارمیٹس
+            "formats": formats_data[:20]
         }
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e).split('\n')[0])
+        raise HTTPException(status_code=400, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
