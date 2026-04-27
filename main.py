@@ -14,14 +14,14 @@ from typing import List, Dict, Any
 # --- FastAPI App Setup ---
 app = FastAPI(
     title="SaveMedia Backend",
-    version="2.2",
-    description="Production-ready FastAPI backend for SaveMedia.online — with Cookie Support."
+    version="5.5",
+    description="Secure Version — Cookies via Environment Variables"
 )
 
 # --- ThreadPool for blocking yt-dlp calls ---
 executor = ThreadPoolExecutor(max_workers=10)
 
-# --- Restricted CORS setup ---
+# --- CORS Setup ---
 allowed_origins = [
     "https://savemedia.online",
     "https://www.savemedia.online",
@@ -40,12 +40,7 @@ app.add_middleware(
 def is_safe_url(url: str) -> bool:
     try:
         parsed = urlparse(url)
-        if parsed.scheme not in ["http", "https"]:
-            return False
-        blocked_hosts = ["localhost", "127.0.0.1", "169.254.169.254", "0.0.0.0"]
-        if parsed.hostname in blocked_hosts:
-            return False
-        return True
+        return parsed.scheme in ["http", "https"]
     except:
         return False
 
@@ -60,29 +55,25 @@ def add_force_download_param(original_url: str) -> str:
         query_params['mime'] = ['application/octet-stream']
         new_query = urlencode(query_params, doseq=True)
         return urlunparse(parsed_url._replace(query=new_query))
-    except Exception:
+    except:
         return original_url
 
 def parse_resolution(f: Dict) -> int:
     if f.get('height'):
         return int(f['height'])
-    res = f.get('resolution', '0p')
-    if 'x' in res:
-        try:
-            return int(res.split('x')[1])
-        except:
-            return 0
-    return int(res.replace('p', '')) if res.replace('p', '').isdigit() else 0
+    res = str(f.get('resolution', '0'))
+    match = re.search(r'(\d+)', res)
+    return int(match.group(1)) if match else 0
 
 def sync_extract_info(url: str) -> Dict[str, Any]:
-    """Blocking yt-dlp call with Environment Cookie Support"""
+    """Extract info using Cookies from Environment Variable"""
     
-    # Vercel environment se cookies uthana
+    # Vercel/System settings se cookies uthana (SAB SE SAFE TAREEKA)
     cookies_content = os.getenv("YOUTUBE_COOKIES")
     temp_cookie_path = None
 
-    # Agar cookies maujood hain, to ek temporary file banana
     if cookies_content:
+        # Create a secure temporary file for the session
         fd, temp_cookie_path = tempfile.mkstemp(suffix=".txt")
         with os.fdopen(fd, 'w') as f:
             f.write(cookies_content)
@@ -91,16 +82,17 @@ def sync_extract_info(url: str) -> Dict[str, Any]:
         "quiet": True,
         "skip_download": True,
         "no_warnings": True,
-        "cookiefile": temp_cookie_path, # Cookies yahan istemal ho rahi hain
-        "socket_timeout": 15,
-        "source_address": "0.0.0.0",
+        "cookiefile": temp_cookie_path, 
+        "format": "best", # "Format not available" error se bachne ke liye
+        "socket_timeout": 20,
         "extractor_args": {
             'youtube': {
-                'player_client': ['android', 'web'],
+                'player_client': ['android', 'web', 'ios'],
+                'skip': ['hls', 'dash']
             }
         },
         "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
         },
     }
 
@@ -108,18 +100,14 @@ def sync_extract_info(url: str) -> Dict[str, Any]:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             return ydl.extract_info(url, download=False)
     finally:
-        # File delete karna taaki storage saaf rahe
+        # File delete karna taaki storage saaf rahe aur security bani rahe
         if temp_cookie_path and os.path.exists(temp_cookie_path):
             os.remove(temp_cookie_path)
 
 # --- Routes ---
 @app.get("/")
 def home():
-    return {"message": "✅ SaveMedia Backend v5.1 (Cookies Enabled) running successfully!"}
-
-@app.get("/health")
-def health_check():
-    return {"status": "ok"}
+    return {"message": "✅ SaveMedia v5.5 (Secure Mode) is running!"}
 
 @app.get("/download")
 async def download_video(url: str = Query(..., description="Video URL")):
@@ -130,49 +118,55 @@ async def download_video(url: str = Query(..., description="Video URL")):
     try:
         info = await loop.run_in_executor(executor, sync_extract_info, url)
 
-        video_title = safe_filename(info.get("title", "downloaded_file"))
+        video_title = safe_filename(info.get("title", "download"))
         progressive_formats: List[Dict] = []
 
+        # Filter for formats that have BOTH video and audio
         for f in info.get("formats", []):
             original_url = f.get("url")
             if not original_url: continue
 
+            # Progressive formats (vcodec and acodec present)
             if f.get("acodec") != "none" and f.get("vcodec") != "none":
-                force_download_url = add_force_download_param(original_url)
                 height = parse_resolution(f)
-
                 progressive_formats.append({
                     "format_id": f.get("format_id"),
                     "ext": f.get("ext", "mp4"),
-                    "format_note": f.get("format_note"),
                     "filesize": f.get("filesize") or f.get("filesize_approx"),
                     "url": original_url,
-                    "force_download_url": force_download_url,
-                    "resolution": f"{height}p" if height else f.get("resolution"),
+                    "force_download_url": add_force_download_param(original_url),
+                    "resolution": f"{height}p" if height else "MP4",
                     "height": height,
-                    "suggested_filename": f"{video_title}.{f.get('ext', 'mp4')}",
                 })
 
+        # Fallback agar koi progressive format na mile
         if not progressive_formats:
-            raise HTTPException(status_code=404, detail="No direct downloadable formats found.")
+             for f in info.get("formats", []):
+                if f.get("url"):
+                    progressive_formats.append({
+                        "format_id": f.get("format_id"),
+                        "ext": f.get("ext", "mp4"),
+                        "url": f.get("url"),
+                        "force_download_url": add_force_download_param(f.get("url")),
+                        "resolution": "Available",
+                        "height": 0
+                    })
 
+        # Sort by resolution (Highest first)
         progressive_formats.sort(key=lambda x: x['height'], reverse=True)
-        for f in progressive_formats: del f['height']
 
         return JSONResponse(content={
             "title": info.get("title"),
             "thumbnail": info.get("thumbnail"),
             "uploader": info.get("uploader"),
             "duration": info.get("duration"),
-            "webpage_url": info.get("webpage_url"),
             "formats": progressive_formats,
         })
 
-    except yt_dlp.utils.DownloadError as e:
-        error_msg = str(e).split('\n')[0]
-        raise HTTPException(status_code=400, detail=f"Error: {error_msg}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Server error: {str(e)[:100]}")
+        # Detail error message for debugging
+        error_str = str(e).split('\n')[0]
+        raise HTTPException(status_code=400, detail=f"YT-DLP Error: {error_str}")
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8080)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000)
