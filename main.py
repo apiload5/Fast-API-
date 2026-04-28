@@ -3,24 +3,25 @@ from fastapi.middleware.cors import CORSMiddleware
 import yt_dlp
 import asyncio
 import os
-import tempfile
+from pytube import YouTube
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse, parse_qs, urlunparse, urlencode
 from typing import Dict, Any
 
-# --- Configuration ---
-# اپنے کلاؤڈ فلیئر ورکر کا لنک یہاں ڈالیں
-WORKER_PROXY = "https://white-fire-28ec.muhammadyasirkhursheedahmed.workers.dev/?url="
-
-app = FastAPI(title="SaveMedia Ultra Backend v10.0")
-executor = ThreadPoolExecutor(max_workers=5)
+app = FastAPI(title="SaveMedia Ultra Backend v11.0")
+executor = ThreadPoolExecutor(max_workers=10)
 
 # --- CORS Settings ---
+# Yahan aapki domains allow kar di gayi hain
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://savemedia.online", "https://www.savemedia.online", "https://ticnotester.blogspot.com"],
+    allow_origins=[
+        "https://savemedia.online", 
+        "https://www.savemedia.online", 
+        "https://ticnotester.blogspot.com"
+    ],
     allow_credentials=True,
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
@@ -33,111 +34,100 @@ def add_force_download_param(url: str) -> str:
         return urlunparse(p._replace(query=urlencode(q, doseq=True)))
     except: return url
 
-def sync_extract_info(url: str) -> Dict[str, Any]:
-    cookies_content = os.getenv("YOUTUBE_COOKIES")
-    temp_cookie_path = None
-    
-    if cookies_content:
-        fd, temp_cookie_path = tempfile.mkstemp(suffix=".txt")
-        with os.fdopen(fd, 'w') as f:
-            f.write(cookies_content)
+def is_youtube(url: str) -> bool:
+    domain = urlparse(url).netloc
+    return 'youtube.com' in domain or 'youtu.be' in domain
 
-    # دو مختلف طریقے (Strategies)
-    options_list = [
-        # Strategy 1: Cloudflare Worker Proxy + Web Client
-        {
-            "proxy": WORKER_PROXY,
-            "format": "best",
-            "plugin_extractors": ["get_pot"],
-            "extractor_args": {
-                'youtube': {
-                    'player_client': ['web'], 
-                    'po_token': ['web+generated']
-                }
-            },
-        },
-        # Strategy 2: Direct Server + iOS/Android Client (Afsar bhot kam block hota hai)
-        {
-            "format": "best[vcodec!=none][acodec!=none][ext=mp4]/best[vcodec!=none][acodec!=none][ext=webm]/best",
-            "plugin_extractors": ["get_pot"],
-            "extractor_args": {
-                'youtube': {
-                    'player_client': ['ios', 'android'], 
-                    'po_token': ['ios+generated']
-                }
-            },
-        }
-    ]
+# --- Extraction Logic ---
+def extract_info(url: str) -> Dict[str, Any]:
+    # --- YouTube Strategy: Pytube ---
+    if is_youtube(url):
+        try:
+            yt = YouTube(url)
+            formats_data = []
+            # Progressive streams provide both video and audio in one file
+            for stream in yt.streams.filter(progressive=True):
+                res = stream.resolution or "0p"
+                formats_data.append({
+                    "format_id": str(stream.itag),
+                    "ext": stream.mime_type.split('/')[-1],
+                    "resolution": res,
+                    "url": stream.url,
+                    "force_download_url": add_force_download_param(stream.url),
+                    "height": int(res.replace("p", ""))
+                })
+            
+            return {
+                "source": "pytube",
+                "title": yt.title,
+                "thumbnail": yt.thumbnail_url,
+                "uploader": yt.author,
+                "duration": yt.length,
+                "formats": formats_data
+            }
+        except Exception as e:
+            raise Exception(f"YouTube Error (Pytube): {str(e)}")
 
-    last_error = ""
-    result = None
-
-    for opts in options_list:
-        common_opts = {
+    # --- Other Platforms: yt-dlp (No Proxy) ---
+    else:
+        ydl_opts = {
             "quiet": True,
             "no_warnings": True,
-            "cookiefile": temp_cookie_path,
-            "socket_timeout": 25,
+            "format": "best",
             "nocheckcertificate": True,
         }
-        common_opts.update(opts)
-
         try:
-            with yt_dlp.YoutubeDL(common_opts) as ydl:
-                result = ydl.extract_info(url, download=False)
-                if result:
-                    break # Agar data mil gaya to loop khatam kar do
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                formats_data = []
+                for f in info.get("formats", []):
+                    f_url = f.get("url")
+                    if not f_url: continue
+                    height = f.get('height') or 0
+                    formats_data.append({
+                        "format_id": f.get("format_id"),
+                        "ext": f.get("ext", "mp4"),
+                        "resolution": f"{height}p" if height else "Standard",
+                        "url": f_url,
+                        "force_download_url": add_force_download_param(f_url),
+                        "height": height
+                    })
+                
+                return {
+                    "source": "yt-dlp",
+                    "title": info.get("title"),
+                    "thumbnail": info.get("thumbnail"),
+                    "uploader": info.get("uploader"),
+                    "duration": info.get("duration"),
+                    "formats": formats_data
+                }
         except Exception as e:
-            last_error = str(e).split('\n')[0]
-            continue
-
-    # Clean up cookie file
-    if temp_cookie_path and os.path.exists(temp_cookie_path):
-        os.remove(temp_cookie_path)
-
-    if not result:
-        raise Exception(f"Extraction failed: {last_error}")
-    
-    return result
+            raise Exception(f"Platform Error (yt-dlp): {str(e)}")
 
 # --- API Route ---
 @app.get("/download")
 async def download_api(url: str = Query(..., description="Video URL")):
     loop = asyncio.get_event_loop()
     try:
-        info = await loop.run_in_executor(executor, sync_extract_info, url)
+        data = await loop.run_in_executor(executor, extract_info, url)
         
-        formats_data = []
-        formats = info.get("formats", [])
-        
-        for f in formats:
-            f_url = f.get("url")
-            if not f_url: continue
-            
-            height = f.get('height') or 0
-            formats_data.append({
-                "format_id": f.get("format_id"),
-                "ext": f.get("ext", "mp4"),
-                "resolution": f"{height}p" if height else "Standard",
-                "url": f_url,
-                "force_download_url": add_force_download_param(f_url),
-                "height": height
-            })
-
-        # Sort: Highest resolution at top
-        formats_data.sort(key=lambda x: x['height'], reverse=True)
+        # Sort: High Quality First
+        if data["formats"]:
+            data["formats"].sort(key=lambda x: x.get('height', 0), reverse=True)
 
         return {
             "status": "success",
-            "title": info.get("title"),
-            "thumbnail": info.get("thumbnail"),
-            "uploader": info.get("uploader"),
-            "duration": info.get("duration"),
-            "formats": formats_data[:20]
+            "extracted_via": data["source"],
+            "title": data.get("title"),
+            "thumbnail": data.get("thumbnail"),
+            "uploader": data.get("uploader"),
+            "duration": data.get("duration"),
+            "formats": data["formats"][:20]
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
+    # Port 8080 use ho raha hai, aap zarurat ke mutabiq change kar sakte hain
     uvicorn.run(app, host="0.0.0.0", port=8080)
