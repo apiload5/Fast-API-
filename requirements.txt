@@ -3,3 +3,5 @@ uvicorn
 yt-dlp
 asyncio
 yt-dlp-get-pot
+requests
+curl_cffi
