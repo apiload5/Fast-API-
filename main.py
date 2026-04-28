@@ -4,16 +4,11 @@ import yt_dlp
 import asyncio
 import os
 import tempfile
-import requests
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse, parse_qs, urlunparse, urlencode
 from typing import Dict, Any
 
-# --- Configuration ---
-# Agar worker 400 error de raha he to use temporary empty rakhen: WORKER_PROXY = ""
-WORKER_PROXY = "https://white-fire-28ec.muhammadyasirkhursheedahmed.workers.dev/?url="
-
-app = FastAPI(title="SaveMedia Ultra Backend v10.2")
+app = FastAPI(title="SaveMedia Ultra Backend v10.3")
 executor = ThreadPoolExecutor(max_workers=10)
 
 # --- CORS Settings ---
@@ -35,7 +30,7 @@ def add_force_download_param(url: str) -> str:
     except: return url
 
 def sync_extract_info(url: str) -> Dict[str, Any]:
-    # 1. Cookies Cleanup & Setup
+    # 1. Cookies Setup (Environment Variable se)
     cookies_content = os.getenv("YOUTUBE_COOKIES")
     temp_cookie_path = None
     
@@ -44,69 +39,41 @@ def sync_extract_info(url: str) -> Dict[str, Any]:
         with os.fdopen(fd, 'w') as f:
             f.write(cookies_content.strip())
 
-    # 2. Advanced Multi-Strategy (No-Proxy First)
-    # Pehle direct mobile client try karenge kyunke is pe proxy ki zaroorat nahi parti
-    options_list = [
-        # Strategy 1: Direct (Android/iOS) - Most Reliable
-        {
-            "format": "best", 
-            "extractor_args": {
-                'youtube': {
-                    'player_client': ['android', 'ios'],
-                    'po_token': ['web+generated']
-                }
-            },
+    # 2. Optimized YT-DLP Options (Mobile First Strategy)
+    # Proxy ko hata dia gaya he taake '400 Bad Request' na aye
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "cookiefile": temp_cookie_path,
+        "socket_timeout": 30,
+        "nocheckcertificate": True,
+        "check_formats": False, # Requested format error fix
+        "format": "best",
+        "extractor_args": {
+            'youtube': {
+                # Mobile clients (iOS/Android) block nahi hote
+                'player_client': ['ios', 'android'],
+                'po_token': ['web+generated'] # PO Token automated fix
+            }
         },
-        # Strategy 2: Proxy Fallback (Agar direct block ho jaye)
-        {
-            "proxy": WORKER_PROXY if WORKER_PROXY else None,
-            "format": "best",
-            "extractor_args": {
-                'youtube': {
-                    'player_client': ['web'],
-                    'po_token': ['web+generated']
-                }
-            },
-        }
-    ]
+        # Asli iPhone user agent
+        "user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
+    }
 
-    last_error = ""
-    result = None
-
-    for opts in options_list:
-        # Agar proxy set nahi he to strategy skip karein
-        if opts.get("proxy") == "": continue
-
-        common_opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "cookiefile": temp_cookie_path,
-            "socket_timeout": 25,
-            "nocheckcertificate": True,
-            "check_formats": False, 
-            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-        }
-        common_opts.update(opts)
-
-        try:
-            with yt_dlp.YoutubeDL(common_opts) as ydl:
-                result = ydl.extract_info(url, download=False)
-                if result:
-                    break 
-        except Exception as e:
-            last_error = str(e).split('\n')[0]
-            continue
-
-    # Cleanup
-    if temp_cookie_path and os.path.exists(temp_cookie_path):
-        try: os.remove(temp_cookie_path)
-        except: pass
-
-    if not result:
-        # Agar proxy ne 400 error dia he to detail message
-        raise Exception(f"Extraction failed. Possible Proxy/Token Issue: {last_error}")
-    
-    return result
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            result = ydl.extract_info(url, download=False)
+            if not result:
+                raise Exception("No data returned from YouTube")
+            return result
+    except Exception as e:
+        error_msg = str(e).split('\n')[0]
+        raise Exception(f"YT-DLP Error: {error_msg}")
+    finally:
+        # File delete karna zaroori he taake space full na ho
+        if temp_cookie_path and os.path.exists(temp_cookie_path):
+            try: os.remove(temp_cookie_path)
+            except: pass
 
 # --- API Route ---
 @app.get("/download")
@@ -132,6 +99,7 @@ async def download_api(url: str = Query(..., description="Video URL")):
                 "height": height
             })
 
+        # Sorting: High resolution top pe
         formats_data.sort(key=lambda x: x['height'], reverse=True)
 
         return {
