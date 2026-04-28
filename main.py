@@ -2,12 +2,13 @@ from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import yt_dlp
 import asyncio
+import random
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse, parse_qs, urlunparse, urlencode
 from typing import Dict, Any
 
-app = FastAPI(title="SaveMedia Ultra Backend v12.0")
-executor = ThreadPoolExecutor(max_workers=10)
+app = FastAPI(title="SaveMedia Ultra Backend v12.1")
+executor = ThreadPoolExecutor(max_workers=5)
 
 app.add_middleware(
     CORSMiddleware,
@@ -25,42 +26,47 @@ def add_force_download_param(url: str) -> str:
         return urlunparse(p._replace(query=urlencode(q, doseq=True)))
     except: return url
 
-def sync_extract_info(url: str) -> Dict[str, Any]:
-    # Hum 'ios' aur 'android' clients use karenge jo Vercel par block nahi hote
+def get_stable_info(url: str) -> Dict[str, Any]:
+    user_agents = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+    ]
+
     ydl_opts = {
         "quiet": True,
         "no_warnings": True,
-        "nocheckcertificate": True,
         "format": "best",
+        "nocheckcertificate": True,
+        "http_headers": {
+            "User-Agent": random.choice(user_agents),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Referer": "https://www.google.com/",
+            "DNT": "1",
+        },
         "extractor_args": {
             'youtube': {
-                'player_client': ['ios', 'android'],
-                'po_token': ['web+generated']
+                'player_client': ['android'], 
+                'player_skip': ['webpage', 'configs'],
             }
         },
     }
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            result = ydl.extract_info(url, download=False)
-            if not result:
-                raise Exception("No data found")
-            return result
-    except Exception as e:
-        raise Exception(str(e))
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        return ydl.extract_info(url, download=False)
 
 @app.get("/download")
 async def download_api(url: str = Query(..., description="Video URL")):
     loop = asyncio.get_event_loop()
     try:
-        info = await loop.run_in_executor(executor, sync_extract_info, url)
+        # Pytube hataya gaya hai, ab sab kuch yt-dlp se handle hoga
+        info = await loop.run_in_executor(executor, get_stable_info, url)
         
         formats_data = []
-        formats = info.get("formats", [])
-        
-        for f in formats:
+        for f in info.get("formats", []):
             f_url = f.get("url")
-            if not f_url or "manifest" in f_url: continue # Skip broken links
+            if not f_url or "manifest" in f_url: continue
             
             height = f.get('height') or 0
             formats_data.append({
@@ -85,4 +91,7 @@ async def download_api(url: str = Query(..., description="Video URL")):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Extraction Error: {str(e)}")
 
-# Vercel needs the 'app' object
+# Vercel entry point requirement
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8080)
