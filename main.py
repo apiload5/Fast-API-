@@ -4,15 +4,16 @@ import yt_dlp
 import asyncio
 import os
 import tempfile
-import requests  # Proxy support ke liye lazmi hai
+import requests  # Stable proxy handling ke liye
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse, parse_qs, urlunparse, urlencode
 from typing import Dict, Any
 
 # --- Configuration ---
+# Aapka Cloudflare Worker Proxy
 WORKER_PROXY = "https://white-fire-28ec.muhammadyasirkhursheedahmed.workers.dev/?url="
 
-app = FastAPI(title="SaveMedia Ultra Backend v10.0")
+app = FastAPI(title="SaveMedia Ultra Backend v10.1")
 executor = ThreadPoolExecutor(max_workers=10)
 
 # --- CORS Settings ---
@@ -24,13 +25,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Check for curl_cffi support
-try:
-    from curl_cffi import requests as cc_requests
-    HAS_CURL_CFFI = True
-except ImportError:
-    HAS_CURL_CFFI = False
-
 # --- Helpers ---
 def add_force_download_param(url: str) -> str:
     try:
@@ -41,7 +35,7 @@ def add_force_download_param(url: str) -> str:
     except: return url
 
 def sync_extract_info(url: str) -> Dict[str, Any]:
-    # 1. Handle Cookies correctly
+    # 1. Cookies extraction from Environment Variable
     cookies_content = os.getenv("YOUTUBE_COOKIES")
     temp_cookie_path = None
     
@@ -50,9 +44,9 @@ def sync_extract_info(url: str) -> Dict[str, Any]:
         with os.fdopen(fd, 'w') as f:
             f.write(cookies_content.strip())
 
-    # 2. Advanced Multi-Strategy Extraction
+    # 2. Optimized Strategies (Bina kisi risky 'impersonate' target ke)
     options_list = [
-        # Strategy 1: Mobile Clients (High Success Rate)
+        # Strategy 1: Mobile Clients (Direct, no proxy) - Best success rate
         {
             "format": "best", 
             "extractor_args": {
@@ -62,7 +56,7 @@ def sync_extract_info(url: str) -> Dict[str, Any]:
                 }
             },
         },
-        # Strategy 2: Web Client + Proxy (Dependency fix included)
+        # Strategy 2: Web Client + Cloudflare Proxy (Standard Requests)
         {
             "proxy": WORKER_PROXY,
             "format": "best",
@@ -85,13 +79,11 @@ def sync_extract_info(url: str) -> Dict[str, Any]:
             "cookiefile": temp_cookie_path,
             "socket_timeout": 30,
             "nocheckcertificate": True,
-            "check_formats": False,  # CRITICAL: Fixes 'Requested format not available'
+            "check_formats": False, # CRITICAL: Requested format not available fix
+            # Browser-like headers manually set taake impersonate ki zaroorat na pare
+            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         }
         
-        # Browser ki nakal agar curl_cffi available ho
-        if HAS_CURL_CFFI:
-            common_opts["impersonate"] = "chrome"
-            
         common_opts.update(opts)
 
         try:
@@ -100,10 +92,11 @@ def sync_extract_info(url: str) -> Dict[str, Any]:
                 if result:
                     break 
         except Exception as e:
+            # Error log cleanup
             last_error = str(e).split('\n')[0]
             continue
 
-    # Clean up
+    # Cleanup cookie file
     if temp_cookie_path and os.path.exists(temp_cookie_path):
         try: os.remove(temp_cookie_path)
         except: pass
@@ -130,6 +123,7 @@ async def download_api(url: str = Query(..., description="Video URL")):
             height = f.get('height') or 0
             ext = f.get("ext", "mp4")
             
+            # Sirf useful formats filter kar rahe hain
             formats_data.append({
                 "format_id": f.get("format_id"),
                 "ext": ext,
@@ -139,7 +133,7 @@ async def download_api(url: str = Query(..., description="Video URL")):
                 "height": height
             })
 
-        # Sorting by height
+        # Highest resolution first
         formats_data.sort(key=lambda x: x['height'], reverse=True)
 
         return {
@@ -155,5 +149,6 @@ async def download_api(url: str = Query(..., description="Video URL")):
 
 if __name__ == "__main__":
     import uvicorn
+    # Hosting port configuration
     port = int(os.getenv("PORT", 8080))
     uvicorn.run(app, host="0.0.0.0", port=port)
