@@ -3,4 +3,3 @@ uvicorn
 yt-dlp
 asyncio
 python-multipart
-requests
