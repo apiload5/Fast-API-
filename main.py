@@ -3,164 +3,141 @@ from fastapi.middleware.cors import CORSMiddleware
 import yt_dlp
 import asyncio
 import os
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse, parse_qs, urlunparse, urlencode
 from typing import Dict, Any
 
-# Optional: ytc for automatic cookies
-try:
-    import ytc
-    HAS_YTC = True
-except ImportError:
-    HAS_YTC = False
+# --- Configuration ---
+# اپنے کلاؤڈ فلیئر ورکر کا لنک یہاں ڈالیں
+WORKER_PROXY = "https://white-fire-28ec.muhammadyasirkhursheedahmed.workers.dev/?url="
 
-app = FastAPI(title="SaveMedia Verceal Fixed")
-executor = ThreadPoolExecutor(max_workers=3)
+app = FastAPI(title="SaveMedia Ultra Backend v10.0")
+executor = ThreadPoolExecutor(max_workers=5)
 
-# CORS Settings
+# --- CORS Settings ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://savemedia.online",
-        "https://www.savemedia.online",
-        "https://ticnotester.blogspot.com"
-    ],
+    allow_origins=["https://savemedia.online", "https://www.savemedia.online", "https://ticnotester.blogspot.com"],
     allow_credentials=True,
-    allow_methods=["GET", "OPTIONS"],
+    allow_methods=["GET"],
     allow_headers=["*"],
 )
 
+# --- Helpers ---
 def add_force_download_param(url: str) -> str:
     try:
         p = urlparse(url)
         q = parse_qs(p.query)
         q['mime'] = ['application/octet-stream']
         return urlunparse(p._replace(query=urlencode(q, doseq=True)))
-    except:
-        return url
+    except: return url
 
 def sync_extract_info(url: str) -> Dict[str, Any]:
-    # Extract video ID
-    import re
-    video_id_match = re.search(r'(?:v=|\/)([0-9A-Za-z_-]{11})(?:[?&]|$)', url)
-    if video_id_match:
-        clean_url = f'https://www.youtube.com/watch?v={video_id_match.group(1)}'
-    else:
-        clean_url = url
-
-    # Base yt-dlp options with web_embedded client
-    ydl_opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "socket_timeout": 30,
-        "nocheckcertificate": True,
-        "format": "best[height<=720]/best",
-        "noplaylist": True,
-        "extractor_args": {
-            'youtube': {
-                'player_client': ['default', 'web_embedded'],  # KEY FIX
-            }
-        },
-        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    }
-
-    # Add cookies if available
-    if HAS_YTC:
-        try:
-            cookies = ytc.youtube()
-            if cookies:
-                ydl_opts['http_headers'] = {'Cookie': cookies}
-        except:
-            pass
-
-    # Also try environment cookies if set
     cookies_content = os.getenv("YOUTUBE_COOKIES")
-    if cookies_content and len(cookies_content.strip()) > 10:
-        import tempfile
+    temp_cookie_path = None
+    
+    if cookies_content:
         fd, temp_cookie_path = tempfile.mkstemp(suffix=".txt")
         with os.fdopen(fd, 'w') as f:
-            f.write(cookies_content.strip())
-        ydl_opts['cookiefile'] = temp_cookie_path
+            f.write(cookies_content)
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            result = ydl.extract_info(clean_url, download=False)
-            if result and isinstance(result, dict) and result.get("formats"):
-                return result
-            raise Exception("No formats found")
-    except Exception as e:
-        error_msg = str(e)
-        if "Sign in to confirm" in error_msg or "bot" in error_msg.lower():
-            raise Exception("This video requires authentication. Try a different video without restrictions.")
-        raise Exception(f"Extraction failed: {error_msg[:200]}")
+    # دو مختلف طریقے (Strategies)
+    options_list = [
+        # Strategy 1: Cloudflare Worker Proxy + Web Client
+        {
+            "proxy": WORKER_PROXY,
+            "format": "best",
+            "plugin_extractors": ["get_pot"],
+            "extractor_args": {
+                'youtube': {
+                    'player_client': ['web'], 
+                    'po_token': ['web+generated']
+                }
+            },
+        },
+        # Strategy 2: Direct Server + iOS/Android Client (Afsar bhot kam block hota hai)
+        {
+            "format": "best[vcodec!=none][acodec!=none][ext=mp4]/best[vcodec!=none][acodec!=none][ext=webm]/best",
+            "plugin_extractors": ["get_pot"],
+            "extractor_args": {
+                'youtube': {
+                    'player_client': ['ios', 'android'], 
+                    'po_token': ['ios+generated']
+                }
+            },
+        }
+    ]
 
+    last_error = ""
+    result = None
+
+    for opts in options_list:
+        common_opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "cookiefile": temp_cookie_path,
+            "socket_timeout": 25,
+            "nocheckcertificate": True,
+        }
+        common_opts.update(opts)
+
+        try:
+            with yt_dlp.YoutubeDL(common_opts) as ydl:
+                result = ydl.extract_info(url, download=False)
+                if result:
+                    break # Agar data mil gaya to loop khatam kar do
+        except Exception as e:
+            last_error = str(e).split('\n')[0]
+            continue
+
+    # Clean up cookie file
+    if temp_cookie_path and os.path.exists(temp_cookie_path):
+        os.remove(temp_cookie_path)
+
+    if not result:
+        raise Exception(f"Extraction failed: {last_error}")
+    
+    return result
+
+# --- API Route ---
 @app.get("/download")
 async def download_api(url: str = Query(..., description="Video URL")):
     loop = asyncio.get_event_loop()
     try:
         info = await loop.run_in_executor(executor, sync_extract_info, url)
-
-        if not info:
-            raise HTTPException(status_code=400, detail="Could not retrieve video information")
-
-        formats = info.get("formats", [])
-        if not formats:
-            raise HTTPException(status_code=400, detail="No formats available")
-
+        
         formats_data = []
-        seen = set()
-
+        formats = info.get("formats", [])
+        
         for f in formats:
             f_url = f.get("url")
-            if not f_url or f_url in seen:
-                continue
-
-            protocol = f.get("protocol", "")
-            if protocol in ["m3u8_native", "m3u8"]:
-                continue
-
-            seen.add(f_url)
-
+            if not f_url: continue
+            
             height = f.get('height') or 0
-            vcodec = f.get('vcodec', 'none')
-            acodec = f.get('acodec', 'none')
-            ext = f.get("ext", "mp4")
-
-            if height > 0:
-                quality = f"{height}p"
-            else:
-                quality = "Audio Only" if acodec != 'none' and vcodec == 'none' else "SD"
-
             formats_data.append({
                 "format_id": f.get("format_id"),
-                "ext": ext,
-                "resolution": quality,
+                "ext": f.get("ext", "mp4"),
+                "resolution": f"{height}p" if height else "Standard",
                 "url": f_url,
                 "force_download_url": add_force_download_param(f_url),
-                "height": height,
+                "height": height
             })
 
+        # Sort: Highest resolution at top
         formats_data.sort(key=lambda x: x['height'], reverse=True)
 
         return {
             "status": "success",
-            "title": info.get("title", "Unknown"),
+            "title": info.get("title"),
             "thumbnail": info.get("thumbnail"),
-            "uploader": info.get("uploader", "Unknown"),
+            "uploader": info.get("uploader"),
             "duration": info.get("duration"),
-            "formats": formats_data[:10]
+            "formats": formats_data[:20]
         }
-
-    except HTTPException:
-        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-@app.get("/health")
-async def health_check():
-    return {"status": "healthy"}
-
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.getenv("PORT", 8080))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=8080)
