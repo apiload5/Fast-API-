@@ -4,16 +4,16 @@ import yt_dlp
 import asyncio
 import os
 import tempfile
-import requests  # Stable proxy handling ke liye
+import requests
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse, parse_qs, urlunparse, urlencode
 from typing import Dict, Any
 
 # --- Configuration ---
-# Aapka Cloudflare Worker Proxy
+# Agar worker 400 error de raha he to use temporary empty rakhen: WORKER_PROXY = ""
 WORKER_PROXY = "https://white-fire-28ec.muhammadyasirkhursheedahmed.workers.dev/?url="
 
-app = FastAPI(title="SaveMedia Ultra Backend v10.1")
+app = FastAPI(title="SaveMedia Ultra Backend v10.2")
 executor = ThreadPoolExecutor(max_workers=10)
 
 # --- CORS Settings ---
@@ -35,7 +35,7 @@ def add_force_download_param(url: str) -> str:
     except: return url
 
 def sync_extract_info(url: str) -> Dict[str, Any]:
-    # 1. Cookies extraction from Environment Variable
+    # 1. Cookies Cleanup & Setup
     cookies_content = os.getenv("YOUTUBE_COOKIES")
     temp_cookie_path = None
     
@@ -44,9 +44,10 @@ def sync_extract_info(url: str) -> Dict[str, Any]:
         with os.fdopen(fd, 'w') as f:
             f.write(cookies_content.strip())
 
-    # 2. Optimized Strategies (Bina kisi risky 'impersonate' target ke)
+    # 2. Advanced Multi-Strategy (No-Proxy First)
+    # Pehle direct mobile client try karenge kyunke is pe proxy ki zaroorat nahi parti
     options_list = [
-        # Strategy 1: Mobile Clients (Direct, no proxy) - Best success rate
+        # Strategy 1: Direct (Android/iOS) - Most Reliable
         {
             "format": "best", 
             "extractor_args": {
@@ -56,9 +57,9 @@ def sync_extract_info(url: str) -> Dict[str, Any]:
                 }
             },
         },
-        # Strategy 2: Web Client + Cloudflare Proxy (Standard Requests)
+        # Strategy 2: Proxy Fallback (Agar direct block ho jaye)
         {
-            "proxy": WORKER_PROXY,
+            "proxy": WORKER_PROXY if WORKER_PROXY else None,
             "format": "best",
             "extractor_args": {
                 'youtube': {
@@ -73,17 +74,18 @@ def sync_extract_info(url: str) -> Dict[str, Any]:
     result = None
 
     for opts in options_list:
+        # Agar proxy set nahi he to strategy skip karein
+        if opts.get("proxy") == "": continue
+
         common_opts = {
             "quiet": True,
             "no_warnings": True,
             "cookiefile": temp_cookie_path,
-            "socket_timeout": 30,
+            "socket_timeout": 25,
             "nocheckcertificate": True,
-            "check_formats": False, # CRITICAL: Requested format not available fix
-            # Browser-like headers manually set taake impersonate ki zaroorat na pare
-            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "check_formats": False, 
+            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
         }
-        
         common_opts.update(opts)
 
         try:
@@ -92,17 +94,17 @@ def sync_extract_info(url: str) -> Dict[str, Any]:
                 if result:
                     break 
         except Exception as e:
-            # Error log cleanup
             last_error = str(e).split('\n')[0]
             continue
 
-    # Cleanup cookie file
+    # Cleanup
     if temp_cookie_path and os.path.exists(temp_cookie_path):
         try: os.remove(temp_cookie_path)
         except: pass
 
     if not result:
-        raise Exception(f"Extraction failed: {last_error}")
+        # Agar proxy ne 400 error dia he to detail message
+        raise Exception(f"Extraction failed. Possible Proxy/Token Issue: {last_error}")
     
     return result
 
@@ -121,19 +123,15 @@ async def download_api(url: str = Query(..., description="Video URL")):
             if not f_url: continue
             
             height = f.get('height') or 0
-            ext = f.get("ext", "mp4")
-            
-            # Sirf useful formats filter kar rahe hain
             formats_data.append({
                 "format_id": f.get("format_id"),
-                "ext": ext,
+                "ext": f.get("ext", "mp4"),
                 "resolution": f"{height}p" if height else "SD/Audio",
                 "url": f_url,
                 "force_download_url": add_force_download_param(f_url),
                 "height": height
             })
 
-        # Highest resolution first
         formats_data.sort(key=lambda x: x['height'], reverse=True)
 
         return {
@@ -149,6 +147,5 @@ async def download_api(url: str = Query(..., description="Video URL")):
 
 if __name__ == "__main__":
     import uvicorn
-    # Hosting port configuration
     port = int(os.getenv("PORT", 8080))
     uvicorn.run(app, host="0.0.0.0", port=port)
