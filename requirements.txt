@@ -4,3 +4,4 @@ yt-dlp
 asyncio
 yt-dlp-get-pot
 python-multipart
+ytc
