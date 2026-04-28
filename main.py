@@ -47,18 +47,21 @@ def sync_extract_info(url: str) -> Dict[str, Any]:
         "cookiefile": temp_cookie_path,
         "socket_timeout": 30,
         "nocheckcertificate": True,
-        "check_formats": False, # Requested format error fix
-        "format": "best",
+        
+        # FIX: Agar specific format na mile to crash na ho, 
+        # balkay sirf metadata (formats list) extract kare
+        "format": "best", 
+        "check_formats": False,
+        "get_format": False, 
+        
         "extractor_args": {
             'youtube': {
-                # Mobile clients (iOS/Android) block nahi hote
                 'player_client': ['ios', 'android'],
-                'po_token': ['web+generated'] # PO Token automated fix
+                'po_token': ['web+generated']
             }
         },
-        # Asli iPhone user agent
         "user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
-    }
+        }
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
