@@ -58,7 +58,7 @@ def sync_extract_info(url: str) -> Dict[str, Any]:
         },
         # Strategy 2: Direct Server + iOS/Android Client (Afsar bhot kam block hota hai)
         {
-            "format": "best",
+            "format": "bestvideo+bestaudio/best",
             "plugin_extractors": ["get_pot"],
             "extractor_args": {
                 'youtube': {
