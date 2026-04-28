@@ -2,6 +2,5 @@ fastapi
 uvicorn
 yt-dlp
 asyncio
-yt-dlp-get-pot
+pytube
 python-multipart
-ytc
