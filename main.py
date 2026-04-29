@@ -47,7 +47,7 @@ def get_stable_info(url: str) -> Dict[str, Any]:
     ydl_opts = {
         "quiet": True,
         "no_warnings": True,
-        "format": "best",
+        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
         "nocheckcertificate": True,
         "cookiefile": temp_cookie_path, # Yahan cookies file use ho rahi hai
         "http_headers": {
